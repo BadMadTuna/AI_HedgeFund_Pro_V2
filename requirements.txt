@@ -1,0 +1,7 @@
+openbb
+eodhd
+streamlit
+google-generativeai
+sqlalchemy
+python-dotenv
+apscheduler
