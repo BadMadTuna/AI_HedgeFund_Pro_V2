@@ -1,5 +1,7 @@
 openbb
-eodhd
+requests
+yfinance
+pandas
 streamlit
 google-generativeai
 sqlalchemy
