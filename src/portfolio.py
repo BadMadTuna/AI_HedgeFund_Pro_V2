@@ -89,3 +89,91 @@ class PortfolioManager:
                 entry_price=price, exit_price=0.0, pnl_pct=0.0, pnl_abs=0.0, reason=reason
             )
             db.add(trade_log)
+            
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"Trade Error: {e}")
+            return False
+        finally:
+            db.close()
+
+    def execute_sell(self, ticker: str, price: float, quantity: float = None, reason: str = "Manual Sell") -> bool:
+        """Executes a sell/trim order, adds to cash, and logs the trade."""
+        db = SessionLocal()
+        
+        try:
+            # 1. Find Position
+            pos = db.query(Position).filter(Position.ticker == ticker).first()
+            if not pos or pos.quantity <= 0:
+                print(f"⚠️ No active position found for {ticker}.")
+                db.close()
+                return False
+                
+            qty_to_sell = quantity if quantity and quantity < pos.quantity else pos.quantity
+            if qty_to_sell <= 0:
+                db.close()
+                return False
+
+            # 2. Calculate PnL
+            sale_proceeds = price * qty_to_sell
+            cost_basis = pos.cost * qty_to_sell
+            pnl_abs = sale_proceeds - cost_basis
+            pnl_pct = ((price - pos.cost) / pos.cost) * 100 if pos.cost > 0 else 0.0
+            
+            # 3. Update Position
+            pos.quantity -= qty_to_sell
+            if pos.quantity == 0:
+                db.delete(pos)
+                action_type = "SELL (Full)"
+            else:
+                pos.status = "Trimmed"
+                action_type = "TRIM"
+                
+            # 4. Add Cash
+            cash_pos = db.query(Position).filter(Position.ticker.in_(["EUR", "CASH"])).first()
+            if cash_pos:
+                cash_pos.quantity += sale_proceeds
+            else:
+                new_cash = Position(ticker="EUR", cost=1.0, quantity=sale_proceeds, status="Liquid")
+                db.add(new_cash)
+                
+            # 5. Log to Journal
+            trade_log = Trade(
+                ticker=ticker, action=action_type, quantity=qty_to_sell, 
+                entry_price=pos.cost, exit_price=price, pnl_pct=round(pnl_pct, 2), 
+                pnl_abs=round(pnl_abs, 2), reason=reason
+            )
+            db.add(trade_log)
+            
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"Sell Error: {e}")
+            return False
+        finally:
+            db.close()
+
+# --- Quick Test Block ---
+if __name__ == "__main__":
+    print("Testing Portfolio Manager & Trade Execution...")
+    pm = PortfolioManager()
+    
+    print("\n1. Initial Equity Summary:")
+    print(pm.get_equity_summary())
+    
+    print("\n2. Executing Buy (10 shares of AAPL at $150)...")
+    success = pm.execute_buy("AAPL", 150.0, 10, target=200.0, reason="AI Test Buy")
+    print(f"Buy Success: {success}")
+    
+    print("\n3. Equity After Buy:")
+    print(pm.get_equity_summary())
+    
+    print("\n4. Executing Sell (5 shares of AAPL at $175 - Taking Profit)...")
+    pm.execute_sell("AAPL", 175.0, quantity=5, reason="Taking 50% Profit")
+    
+    print("\n5. Reading the Trade Journal:")
+    from src.database import get_journal_df
+    print(get_journal_df().to_string(index=False))
