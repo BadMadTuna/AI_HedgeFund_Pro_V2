@@ -1,33 +1,46 @@
 import os
+import requests
 import pandas as pd
+import yfinance as yf
 from datetime import datetime, timedelta
-from eodhd import APIClient
 from dotenv import load_dotenv
 
-# Load environment variables from .env
+# Load environment variables
 load_dotenv()
 
 class MarketDataClient:
     def __init__(self):
-        self.api_key = os.getenv("EODHD_API_KEY")
+        self.api_key = os.getenv("TIINGO_API_KEY")
         if not self.api_key:
-            raise ValueError("⚠️ EODHD_API_KEY not found in .env file.")
+            raise ValueError("⚠️ TIINGO_API_KEY not found in .env file.")
         
-        # Initialize the EODHD client
-        self.client = APIClient(self.api_key)
+        self.headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Token {self.api_key}'
+        }
 
     def get_technicals(self, ticker: str) -> dict:
-        """Fetches 1 year of historical data and calculates TA metrics."""
+        """Fetches 1 year of daily prices from Tiingo and calculates TA metrics."""
         try:
-            # EODHD expects tickers like AAPL.US for US stocks
-            symbol = f"{ticker}.US" if "." not in ticker else ticker
+            # Get data for the last 1 year (roughly 252 trading days + buffer)
+            start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices?startDate={start_date}"
             
-            # Fetch historical data
-            df = self.client.get_historical_data(symbol, period='d')
-            if df is None or df.empty:
+            response = requests.get(url, headers=self.headers)
+            if response.status_code != 200:
+                print(f"Tiingo API Error ({ticker}): {response.text}")
+                return None
+                
+            data = response.json()
+            if not data:
                 return None
 
-            # Calculate Moving Averages
+            # Convert to Pandas DataFrame for easy math
+            df = pd.DataFrame(data)
+            df['date'] = pd.to_datetime(df['date'])
+            df.sort_values('date', inplace=True)
+
+            # Calculate Moving Averages based on the 'close' price
             df['SMA_50'] = df['close'].rolling(window=50).mean()
             df['SMA_200'] = df['close'].rolling(window=200).mean()
 
@@ -38,7 +51,7 @@ class MarketDataClient:
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
 
-            # Get latest values
+            # Extract the most recent day's data
             latest = df.iloc[-1]
             return {
                 "Ticker": ticker,
@@ -52,68 +65,58 @@ class MarketDataClient:
             print(f"Error fetching technicals for {ticker}: {e}")
             return None
 
-    def get_news_sentiment(self, ticker: str) -> dict:
-        """Fetches the latest news and EODHD's built-in AI sentiment score."""
+    def get_news(self, ticker: str) -> str:
+        """Fetches the latest 5 news headlines from Tiingo."""
         try:
-            symbol = f"{ticker}.US" if "." not in ticker else ticker
-            # Fetch news from the last 7 days
-            from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            url = f"https://api.tiingo.com/tiingo/news?tickers={ticker}&limit=5"
+            response = requests.get(url, headers=self.headers)
             
-            news = self.client.get_financial_news(s=symbol, from_date=from_date, limit=5)
-            
-            if not news:
-                return {"headlines": "No recent news.", "avg_sentiment": 0.0}
+            if response.status_code != 200:
+                return "News API Error."
+
+            articles = response.json()
+            if not articles:
+                return "No recent news."
 
             headlines = []
-            total_sentiment = 0.0
-            valid_scores = 0
-
-            for article in news:
+            for article in articles:
                 title = article.get('title', 'No Title')
-                sentiment = article.get('sentiment', {})
-                polarity = sentiment.get('polarity', 0) # Score between -1 (Bad) and 1 (Good)
-                
-                headlines.append(f"- {title} (Score: {polarity})")
-                total_sentiment += polarity
-                valid_scores += 1
+                source = article.get('source', 'Unknown')
+                pub_date = article.get('publishedDate', '')[:10] # Just grab the YYYY-MM-DD
+                headlines.append(f"- [{pub_date}] {title} ({source})")
 
-            avg_sentiment = round(total_sentiment / valid_scores, 2) if valid_scores > 0 else 0.0
-
-            return {
-                "headlines": "\n".join(headlines),
-                "avg_sentiment": avg_sentiment
-            }
+            return "\n".join(headlines)
         except Exception as e:
-            print(f"Error fetching news for {ticker}: {e}")
-            return {"headlines": f"Error: {e}", "avg_sentiment": 0.0}
+            return f"Error fetching news: {e}"
 
     def get_earnings_date(self, ticker: str) -> str:
-        """Fetches highly accurate upcoming earnings dates."""
+        """Fallback to yfinance to grab the upcoming earnings date."""
         try:
-            symbol = f"{ticker}.US" if "." not in ticker else ticker
-            from_date = datetime.now().strftime("%Y-%m-%d")
-            to_date = (datetime.now() + timedelta(days=90)).strftime("%Y-%m-%d")
+            t = yf.Ticker(ticker)
+            cal = t.calendar
             
-            earnings = self.client.get_upcoming_earnings(from_date=from_date, to_date=to_date, symbols=symbol)
-            
-            if not earnings or len(earnings) == 0:
-                return "Safe (No earnings in next 90 days)"
-            
-            next_date_str = earnings[0].get('report_date')
-            next_date = datetime.strptime(next_date_str, "%Y-%m-%d").date()
-            days_until = (next_date - datetime.now().date()).days
-            
-            if days_until <= 7:
-                return f"⚠️ EARNINGS IN {days_until} DAYS ({next_date_str})"
-            return f"Safe (Earnings in {days_until} days)"
-            
-        except Exception as e:
+            if cal is None or 'Earnings Date' not in cal or not cal['Earnings Date']:
+                return "Safe (No Data)"
+
+            reported_date = pd.to_datetime(cal['Earnings Date'][0]).date()
+            today = datetime.now().date()
+
+            if reported_date >= today:
+                days_until = (reported_date - today).days
+                if days_until <= 7:
+                    return f"⚠️ EARNINGS IN {days_until} DAYS"
+                return f"Safe (Earnings in {days_until} days)"
+            else:
+                # If the date is in the past, Yahoo hasn't updated it yet
+                return "Safe (Awaiting next quarter date)"
+
+        except Exception:
             return "Safe (Data Error)"
 
 # --- Quick Test Block ---
 if __name__ == "__main__":
     client = MarketDataClient()
-    print("Testing EODHD Data Client...")
+    print("Testing Tiingo Data Client...")
     
     test_ticker = "AAPL"
     
@@ -123,7 +126,5 @@ if __name__ == "__main__":
     print(f"\n--- Earnings for {test_ticker} ---")
     print(client.get_earnings_date(test_ticker))
     
-    print(f"\n--- News & Sentiment for {test_ticker} ---")
-    news_data = client.get_news_sentiment(test_ticker)
-    print(f"Average Sentiment: {news_data['avg_sentiment']}")
-    print(news_data['headlines'])
+    print(f"\n--- News for {test_ticker} ---")
+    print(client.get_news(test_ticker))
