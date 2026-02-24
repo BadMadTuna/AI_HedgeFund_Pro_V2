@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import concurrent.futures
+import requests
 from src.data_client import MarketDataClient
 from src.database import get_portfolio_df, get_journal_df
 from src.ai_agent import AIAgent
@@ -99,41 +101,130 @@ with tab_port:
                         st.write(f"**Plan:** {verdict.get('proposed_stop', '')}")
 
 # ==========================================
-# TAB 2: RADAR SCAN
+# TAB 2: RADAR SCAN (TWO-TIER PIPELINE)
 # ==========================================
 with tab_radar:
-    st.header("🎯 AI Radar Scan")
-    st.write("Scan a list of tickers to find new opportunities.")
+    st.header("🎯 Two-Tier AI Radar Scan")
+    st.write("Phase 1: Quantitative technical filter. Phase 2: AI fundamental deep dive on the Top 20.")
     
-    scan_tickers = st.text_input("Enter tickers (comma separated)", "AAPL, MSFT, NVDA, TSLA")
-    
-    if st.button("Launch Scan", type="primary"):
-        tickers = [t.strip().upper() for t in scan_tickers.split(",")]
-        results = []
+    # Helper: Fetch S&P 500 list from Wikipedia
+    @st.cache_data(ttl=86400) # Cache for 24 hours so we don't spam Wikipedia
+    def get_sp500_tickers():
+        try:
+            url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+            tables = pd.read_html(url)
+            df = tables[0]
+            # Replace dots with dashes for yfinance/Tiingo compatibility (e.g., BRK.B -> BRK-B)
+            return df['Symbol'].str.replace('.', '-').tolist()
+        except Exception as e:
+            st.error("Failed to fetch S&P 500. Using default tech list.")
+            return ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA"]
+
+    # Choose Universe
+    universe_choice = st.radio("Select Universe:", ["Custom List", "S&P 500 (Full Scan)"], horizontal=True)
+    if universe_choice == "Custom List":
+        scan_tickers_input = st.text_input("Enter tickers (comma separated)", "AAPL, MSFT, NVDA, TSLA, AMD, INTC")
+        tickers_to_scan = [t.strip().upper() for t in scan_tickers_input.split(",")]
+    else:
+        tickers_to_scan = get_sp500_tickers()
+        st.info(f"Loaded {len(tickers_to_scan)} tickers from S&P 500.")
+
+    if st.button("🚀 Launch Two-Tier Scan", type="primary"):
+        
+        # --- PHASE 1: THE QUANT FILTER ---
+        st.subheader("⚙️ Phase 1: Quantitative Filter")
+        quant_results = []
         
         progress_bar = st.progress(0)
-        for i, t in enumerate(tickers):
-            with st.spinner(f"Analyzing {t}..."):
-                tech = data_client.get_technicals(t)
-                if tech:
-                    news = data_client.get_news(t)
-                    earn = data_client.get_earnings_date(t)
-                    ai_res = agent.get_hunter_verdict(t, tech, news, earn)
-                    
-                    results.append({
-                        "Ticker": t,
-                        "Price": tech['Price'],
-                        "RSI": tech['RSI'],
-                        "Earnings": earn,
-                        "AI Score": ai_res.get('score', 0),
-                        "Verdict": ai_res.get('verdict', 'N/A'),
-                        "Reasoning": ai_res.get('reasoning', '')
-                    })
-            progress_bar.progress((i + 1) / len(tickers))
+        status_text = st.empty()
+        
+        def fetch_quant(t):
+            tech = data_client.get_technicals(t)
+            if not tech: return None
             
-        if results:
-            df_res = pd.DataFrame(results).sort_values(by="AI Score", ascending=False)
-            st.dataframe(df_res, use_container_width=True, hide_index=True)
+            # Mechanical Quant Scoring Engine (Max 100)
+            score = 0
+            if tech['Price'] > tech['SMA_50']: score += 30      # Short-term trend up
+            if tech['SMA_50'] > tech['SMA_200']: score += 30    # Long-term trend up
+            if 40 <= tech['RSI'] <= 70: score += 40             # Healthy momentum (not overbought/oversold)
+            elif tech['RSI'] < 40: score += 20                  # Value territory
+            
+            tech['Quant_Score'] = score
+            return tech
+
+        # Use Threading to fetch technicals at lightning speed
+        status_text.text(f"Fetching technicals for {len(tickers_to_scan)} stocks...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch_quant, t): t for t in tickers_to_scan}
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                res = future.result()
+                if res: quant_results.append(res)
+                progress_bar.progress((i + 1) / len(tickers_to_scan))
+                
+        if not quant_results:
+            st.error("Phase 1 failed. Check data connection.")
+            st.stop()
+            
+        # Sort and take Top 20
+        df_quant = pd.DataFrame(quant_results).sort_values(by="Quant_Score", ascending=False)
+        top_20_df = df_quant.head(20)
+        
+        st.success(f"Phase 1 Complete! Filtered down to top {len(top_20_df)} candidates.")
+        with st.expander("View Phase 1 Raw Data"):
+            st.dataframe(top_20_df, use_container_width=True)
+
+        # --- PHASE 2: THE AI HUNTER ---
+        st.subheader("🧠 Phase 2: AI Deep Dive (Top 20)")
+        final_results = []
+        
+        ai_progress = st.progress(0)
+        ai_status = st.empty()
+        
+        top_tickers = top_20_df['Ticker'].tolist()
+        
+        for i, t in enumerate(top_tickers):
+            ai_status.text(f"AI analyzing {t} ({i+1}/{len(top_tickers)})...")
+            
+            # Fetch Qualitative Data
+            news = data_client.get_news(t)
+            earn = data_client.get_earnings_date(t)
+            
+            # Retrieve the quant data we already pulled
+            tech_data = top_20_df[top_20_df['Ticker'] == t].iloc[0].to_dict()
+            
+            # Ask Gemini
+            ai_res = agent.get_hunter_verdict(t, tech_data, news, earn)
+            
+            final_results.append({
+                "Ticker": t,
+                "Price": tech_data['Price'],
+                "Quant Score": tech_data['Quant_Score'],
+                "AI Score": ai_res.get('score', 0),
+                "Verdict": ai_res.get('verdict', 'ERROR'),
+                "Earnings": earn,
+                "Reasoning": ai_res.get('reasoning', '')
+            })
+            
+            ai_progress.progress((i + 1) / len(top_tickers))
+            
+            # Pace the AI calls to respect Google's free tier (15 Requests Per Minute)
+            time.sleep(4) 
+            
+        ai_status.text("Scan Complete!")
+        
+        # Display Final Results
+        if final_results:
+            df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
+            
+            # Highlight the verdicts
+            def highlight_verdict(val):
+                if val == 'BUY': return 'background-color: #064e3b; color: white;' # Dark Green
+                elif val == 'WATCH': return 'background-color: #78350f; color: white;' # Dark Orange
+                elif val == 'AVOID': return 'background-color: #7f1d1d; color: white;' # Dark Red
+                return ''
+                
+            styled_df = df_final.style.map(highlight_verdict, subset=['Verdict'])
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
 # ==========================================
 # TAB 3: DEEP ANALYZER
