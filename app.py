@@ -32,19 +32,98 @@ tab_port, tab_radar, tab_analyze, tab_journal = st.tabs([
 with tab_port:
     st.header("Portfolio Overview")
     
-    # 1. Equity Summary Cards
-    summary = pm.get_equity_summary()
-    col1, col2, col3 = st.columns(3)
-    col1.metric("💰 Total Equity", f"€{summary['total_equity']:,.2f}")
-    col2.metric("💵 Cash Available", f"€{summary['cash']:,.2f}")
-    col3.metric("📈 Invested Capital", f"€{summary['invested']:,.2f}")
-    
-    # 2. Holdings Table
     df_port = get_portfolio_df()
-    if not df_port.empty:
-        st.dataframe(df_port, use_container_width=True, hide_index=True)
+    
+    # Initialize session state to hold live market data so it doesn't refresh randomly
+    if "live_port_df" not in st.session_state:
+        st.session_state.live_port_df = None
+
+    # --- REFRESH BUTTON & LOGIC ---
+    col_btn, _ = st.columns([1, 4])
+    with col_btn:
+        refresh_clicked = st.button("🔄 Refresh Live Prices & PnL", type="primary", use_container_width=True)
+
+    if refresh_clicked and not df_port.empty:
+        with st.spinner("Fetching live market data from Tiingo..."):
+            
+            # Threading helper to fetch prices lightning fast
+            def fetch_live_price(row):
+                ticker = row['ticker']
+                if ticker == 'EUR':
+                    return {'ticker': 'EUR', 'live_price': 1.0}
+                try:
+                    tech = data_client.get_technicals(ticker)
+                    return {'ticker': ticker, 'live_price': tech['Price'] if tech else row['cost']}
+                except:
+                    return {'ticker': ticker, 'live_price': row['cost']}
+            
+            # Execute concurrent fetches
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(fetch_live_price, row): row for _, row in df_port.iterrows()}
+                live_prices = {fut.result()['ticker']: fut.result()['live_price'] for fut in concurrent.futures.as_completed(futures)}
+            
+            # Build the Enriched DataFrame
+            live_df = df_port.copy()
+            live_df['Live Price'] = live_df['ticker'].map(live_prices)
+            live_df['Current Value'] = live_df['Live Price'] * live_df['quantity']
+            
+            # Calculate PnL (Ignoring Cash)
+            is_stock = live_df['ticker'] != 'EUR'
+            live_df['PnL (€)'] = 0.0
+            live_df['PnL (%)'] = 0.0
+            
+            live_df.loc[is_stock, 'PnL (€)'] = (live_df['Live Price'] - live_df['cost']) * live_df['quantity']
+            live_df.loc[is_stock, 'PnL (%)'] = ((live_df['Live Price'] - live_df['cost']) / live_df['cost']) * 100
+            
+            # Save it to session state
+            st.session_state.live_port_df = live_df
+
+    # --- DISPLAY METRICS & TABLE ---
+    if st.session_state.live_port_df is not None:
+        # 1. DISPLAY LIVE DATA
+        live_df = st.session_state.live_port_df
+        
+        cash = live_df[live_df['ticker'] == 'EUR']['Current Value'].sum() if 'EUR' in live_df['ticker'].values else 0.0
+        invested_cost = live_df[live_df['ticker'] != 'EUR']['cost'].multiply(live_df[live_df['ticker'] != 'EUR']['quantity']).sum()
+        live_invested_val = live_df[live_df['ticker'] != 'EUR']['Current Value'].sum()
+        
+        total_pnl_eur = live_df['PnL (€)'].sum()
+        live_total_equity = cash + live_invested_val
+        total_pnl_pct = (total_pnl_eur / invested_cost * 100) if invested_cost > 0 else 0.0
+        
+        # Enriched Live Summary Cards
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("💰 Live Total Equity", f"€{live_total_equity:,.2f}", f"{total_pnl_eur:+,.2f} €")
+        col2.metric("💵 Cash Available", f"€{cash:,.2f}")
+        col3.metric("📈 Total Return", f"{total_pnl_pct:+.2f}%", f"{total_pnl_eur:+,.2f} €")
+        col4.metric("📊 Live Invested Value", f"€{live_invested_val:,.2f}")
+        
+        # Enriched Live Holdings Table with Color Coding
+        def color_pnl(val):
+            if isinstance(val, str): return ''
+            if val > 0: return 'color: #10b981;' # Profit = Green
+            elif val < 0: return 'color: #ef4444;' # Loss = Red
+            return ''
+            
+        styled_df = live_df.style.format({
+            'cost': '€{:.2f}', 'Live Price': '€{:.2f}', 'Current Value': '€{:.2f}', 
+            'PnL (€)': '€{:.2f}', 'PnL (%)': '{:.2f}%'
+        }).map(color_pnl, subset=['PnL (€)', 'PnL (%)'])
+        
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        
     else:
-        st.info("Portfolio is empty. Add cash or buy positions to get started.")
+        # 2. DISPLAY FALLBACK DB DATA (Before hitting Refresh)
+        summary = pm.get_equity_summary()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("💰 Total Equity (Cost Basis)", f"€{summary['total_equity']:,.2f}")
+        col2.metric("💵 Cash Available", f"€{summary['cash']:,.2f}")
+        col3.metric("📈 Invested Capital", f"€{summary['invested']:,.2f}")
+        
+        if not df_port.empty:
+            st.dataframe(df_port, use_container_width=True, hide_index=True)
+        else:
+            st.info("Portfolio is empty. Add cash or bulk inject positions to get started.")
 
     # 3. Actions & AI Audit
     st.markdown("---")
