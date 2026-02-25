@@ -66,27 +66,58 @@ with tab_port:
                     else:
                         st.error("Failed. Check cash balance or inputs.")
                         
-        # NEW: Bulk Portfolio Injection UI
+        # NEW: Bulk Portfolio Injection UI (Direct Database Bypass)
         with st.expander("📥 Bulk Inject Existing Portfolio"):
-            st.write("Easily onboard your existing stocks. **Format:** `TICKER, QUANTITY, AVG_PRICE`")
+            st.write("Easily onboard your existing stocks without deducting cash. **Format:** `TICKER, QUANTITY, AVG_PRICE`")
             st.write("*(Use 'EUR' to set your initial cash balance)*")
             with st.form("bulk_inject_form"):
                 bulk_data = st.text_area(
                     "Paste your portfolio data here:", 
                     "EUR, 50000, 1.0\nAAPL, 15, 175.50\nMSFT, 10, 400.00"
                 )
-                if st.form_submit_button("Inject Portfolio"):
-                    success_count = 0
-                    for line in bulk_data.split('\n'):
-                        if line.strip():
-                            parts = [p.strip() for p in line.split(',')]
-                            if len(parts) == 3:
-                                ticker, qty, price = parts[0].upper(), float(parts[1]), float(parts[2])
-                                # Target = 0.0 for injected positions
-                                if pm.execute_buy(ticker, price, qty, 0.0):
+                if st.form_submit_button("Force Inject Portfolio"):
+                    import sqlite3
+                    from datetime import datetime
+                    
+                    try:
+                        # Connect directly to the database file, bypassing the PortfolioManager
+                        conn = sqlite3.connect("data/hedgefund.db")
+                        cursor = conn.cursor()
+                        success_count = 0
+                        
+                        for line in bulk_data.split('\n'):
+                            line = line.strip()
+                            if line:
+                                parts = [p.strip() for p in line.split(',')]
+                                if len(parts) == 3:
+                                    ticker = parts[0].upper()
+                                    qty = float(parts[1])
+                                    price = float(parts[2])
+                                    date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    
+                                    # Check if ticker already exists to prevent duplicates
+                                    cursor.execute("SELECT id, quantity, cost FROM portfolio WHERE ticker = ? AND status = 'OPEN'", (ticker,))
+                                    row = cursor.fetchone()
+                                    
+                                    if row:
+                                        # Update existing position
+                                        new_qty = row[1] + qty
+                                        new_cost = ((row[1] * row[2]) + (qty * price)) / new_qty
+                                        cursor.execute("UPDATE portfolio SET quantity = ?, cost = ? WHERE id = ?", (new_qty, new_cost, row[0]))
+                                    else:
+                                        # Force insert new position
+                                        cursor.execute("INSERT INTO portfolio (ticker, cost, quantity, target, status, date_acquired) VALUES (?, ?, ?, ?, 'OPEN', ?)", 
+                                                       (ticker, price, qty, 0.0, date_str))
                                     success_count += 1
-                    st.success(f"Successfully injected {success_count} positions into the database!")
-                    st.rerun()
+                                    
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Successfully force-injected {success_count} positions directly into the database!")
+                        time.sleep(1)
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Injection failed: {e}")
                         
     with m_col2:
         with st.expander("✂️ Sell / Trim Position"):
