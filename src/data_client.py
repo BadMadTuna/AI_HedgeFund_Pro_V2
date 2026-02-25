@@ -66,6 +66,74 @@ class MarketDataClient:
             print(f"Error fetching technicals for {ticker}: {e}")
             return None
         
+    def get_atr_and_sizing(self, ticker, account_value, risk_pct=0.01):
+        """
+        Calculates the 14-day Average True Range (ATR) and recommends a position size.
+        risk_pct = 0.01 means we are risking 1% of total account equity if the stop is hit.
+        """
+        import pandas as pd
+        from datetime import datetime, timedelta
+        import requests
+
+        try:
+            # Fetch 30 days to easily calculate a 14-day rolling ATR
+            end_date = datetime.today()
+            start_date = end_date - timedelta(days=40)
+            
+            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+            params = {
+                'startDate': start_date.strftime('%Y-%m-%d'),
+                'endDate': end_date.strftime('%Y-%m-%d'),
+                'token': self.api_key
+            }
+            
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if len(data) < 15:
+                return None
+                
+            df = pd.DataFrame(data)
+            
+            # Calculate True Range (TR)
+            df['prev_close'] = df['close'].shift(1)
+            df['tr1'] = df['high'] - df['low']
+            df['tr2'] = abs(df['high'] - df['prev_close'])
+            df['tr3'] = abs(df['low'] - df['prev_close'])
+            df['true_range'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+            
+            # 14-Day ATR
+            atr = df['true_range'].rolling(window=14).mean().iloc[-1]
+            current_price = df['close'].iloc[-1]
+            
+            # Risk Sizing Math
+            stop_distance = 2 * atr
+            stop_price = current_price - stop_distance
+            
+            # How much cash are we actually allowed to lose?
+            max_loss_dollars = account_value * risk_pct
+            
+            # How many shares can we buy so that a drop to the stop_price equals max_loss_dollars?
+            if stop_distance > 0:
+                shares_to_buy = int(max_loss_dollars / stop_distance)
+            else:
+                shares_to_buy = 0
+                
+            total_investment = shares_to_buy * current_price
+            
+            return {
+                'Current_Price': round(current_price, 2),
+                'ATR': round(atr, 2),
+                'Stop_Loss': round(stop_price, 2),
+                'Shares': shares_to_buy,
+                'Total_Investment': round(total_investment, 2),
+                'Max_Loss_Risk': round(max_loss_dollars, 2)
+            }
+            
+        except Exception as e:
+            return None
+        
     def get_smart_momentum(self, ticker):
         """
         Fetches historical data and calculates Volatility-Adjusted 12-minus-1 Momentum.

@@ -254,14 +254,27 @@ with tab_radar:
 
             # Create a beautiful, readable dropdown list for the AI's actual paragraphs
             st.divider()
-            st.subheader("📝 Detailed AI Reasoning")
-            st.write("Expand to read the full fundamental analysis for the top candidates.")
+            st.subheader("📝 Detailed AI Reasoning & Trade Sizing")
+            st.write("Expand to read the full fundamental analysis and exact trade execution specs.")
             
-            # Only generate expanders for stocks the AI actually liked
+            # Assuming a $100,000 mock account for sizing. You can change this!
+            ACCOUNT_SIZE = 100000 
+            
             for _, row in df_final.iterrows():
                 if row['Verdict'] in ['BUY', 'WATCH']: 
                     with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
                         st.write(f"**Quant Smoothness Score:** {row['Smooth Score']}")
+                        
+                        # Only calculate the complex ATR math if we are actually considering buying it
+                        if row['Verdict'] == 'BUY':
+                            sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=ACCOUNT_SIZE, risk_pct=0.01)
+                            if sizing:
+                                st.success(f"**Execution Plan (1% Risk on ${ACCOUNT_SIZE:,}):**\n"
+                                           f"- Buy **{sizing['Shares']} shares** at approx **${sizing['Current_Price']}**\n"
+                                           f"- Total Capital Deployed: **${sizing['Total_Investment']:,}**\n"
+                                           f"- Hard Stop Loss: **${sizing['Stop_Loss']}** (2x ATR)\n"
+                                           f"- Max Risk if stopped out: **${sizing['Max_Loss_Risk']}**")
+                            
                         st.markdown(row['Reasoning'])
 
 # ==========================================
