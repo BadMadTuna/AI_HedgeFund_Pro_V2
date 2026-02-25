@@ -237,13 +237,17 @@ with tab_port:
                         st.error("Failed. Ensure you own the stock.")
 
     # 4. AI Guardian
+    # 4. AI Guardian
     if st.button("🛡️ Run AI Guardian Audit on Portfolio"):
-        if df_port.empty or len(df_port[df_port['ticker'] != 'EUR']) == 0:
-            st.warning("No active stocks to audit.")
+        # NEW: Use the live data if it exists, otherwise fall back to the DB
+        audit_df = st.session_state.live_port_df if st.session_state.live_port_df is not None else df_port
+        
+        if audit_df.empty or len(audit_df[audit_df['ticker'] != 'EUR']) == 0:
+            st.warning("No active stocks to audit. (Tip: Click 'Refresh Live Prices' first!)")
         else:
-            with st.spinner("Guardian is analyzing your holdings..."):
+            with st.spinner("Guardian is analyzing your live holdings..."):
                 audit_results = []
-                for _, row in df_port[df_port['ticker'] != 'EUR'].iterrows():
+                for _, row in audit_df[audit_df['ticker'] != 'EUR'].iterrows(): # <--- The Fix
                     ticker = row['ticker']
                     pos_data = row.to_dict()
                     news = data_client.get_news(ticker)
