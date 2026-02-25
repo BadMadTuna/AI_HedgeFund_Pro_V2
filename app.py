@@ -5,6 +5,7 @@ import requests
 import time
 import sqlite3
 from datetime import datetime
+import os
 from src.data_client import MarketDataClient
 from src.database import get_portfolio_df, get_journal_df
 from src.ai_agent import AIAgent
@@ -36,10 +37,12 @@ with tab_port:
     
     df_port = get_portfolio_df()
     
-    # Initialize session state to hold live market data so it doesn't refresh randomly
+    # Initialize session state to hold live market data & audit so they don't disappear on refresh
     if "live_port_df" not in st.session_state:
         st.session_state.live_port_df = None
         st.session_state.current_fx_rate = 1.0
+    if "guardian_audit_df" not in st.session_state:
+        st.session_state.guardian_audit_df = None
 
     # --- REFRESH BUTTON & LOGIC ---
     col_btn, _ = st.columns([1, 4])
@@ -51,12 +54,8 @@ with tab_port:
             
             # 1. Fetch live USD to EUR exchange rate from Tiingo
             try:
-                # Need to access the API key from your data_client
-                # Assuming data_client.api_key exists, otherwise fallback to a generic fetch if needed
                 api_key = getattr(data_client, 'api_key', None) 
                 if not api_key:
-                    # Quick hack if api_key isn't directly exposed on the object
-                    import os
                     api_key = os.getenv("TIINGO_API_KEY")
 
                 fx_url = "https://api.tiingo.com/tiingo/fx/top"
@@ -157,7 +156,7 @@ with tab_port:
         else:
             st.info("Portfolio is empty. Add cash or bulk inject positions to get started.")
 
-    # 3. Actions & AI Audit
+    # 3. Actions & Portfolio Injection
     st.markdown("---")
     st.subheader("🛠️ Management & Portfolio Injection")
     m_col1, m_col2 = st.columns(2)
@@ -188,7 +187,6 @@ with tab_port:
                 )
                 if st.form_submit_button("Force Inject Portfolio"):
                     try:
-                        # Connect directly to the database file, bypassing the PortfolioManager
                         conn = sqlite3.connect("data/hedgefund.db")
                         cursor = conn.cursor()
                         success_count = 0
@@ -203,17 +201,14 @@ with tab_port:
                                     price = float(parts[2])
                                     date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                     
-                                    # Check if ticker already exists to prevent duplicates
                                     cursor.execute("SELECT id, quantity, cost FROM portfolio WHERE ticker = ? AND status = 'OPEN'", (ticker,))
                                     row = cursor.fetchone()
                                     
                                     if row:
-                                        # Update existing position
                                         new_qty = row[1] + qty
                                         new_cost = ((row[1] * row[2]) + (qty * price)) / new_qty
                                         cursor.execute("UPDATE portfolio SET quantity = ?, cost = ? WHERE id = ?", (new_qty, new_cost, row[0]))
                                     else:
-                                        # Force insert new position
                                         cursor.execute("INSERT INTO portfolio (ticker, cost, quantity, target, status, date_acquired) VALUES (?, ?, ?, ?, 'OPEN', ?)", 
                                                        (ticker, price, qty, 0.0, date_str))
                                     success_count += 1
@@ -247,6 +242,7 @@ with tab_port:
             st.warning("No active stocks to audit.")
         else:
             with st.spinner("Guardian is analyzing your holdings..."):
+                audit_results = []
                 for _, row in df_port[df_port['ticker'] != 'EUR'].iterrows():
                     ticker = row['ticker']
                     pos_data = row.to_dict()
@@ -255,12 +251,45 @@ with tab_port:
                     
                     verdict = agent.get_guardian_audit(ticker, pos_data, news, earnings)
                     
-                    # Display as a clean card
-                    with st.container(border=True):
-                        st.markdown(f"### {ticker}  |  **Action:** `{verdict.get('action', 'N/A')}`")
-                        st.write(f"**Earnings Risk:** {verdict.get('earnings_risk', 'Unknown')}")
-                        st.write(f"**Advice:** {verdict.get('reasoning', '')}")
-                        st.write(f"**Plan:** {verdict.get('proposed_stop', '')}")
+                    # Store results for the export file
+                    audit_results.append({
+                        'Ticker': ticker,
+                        'Action': verdict.get('action', 'N/A'),
+                        'Earnings Risk': verdict.get('earnings_risk', 'Unknown'),
+                        'AI Advice': verdict.get('reasoning', ''),
+                        'Execution Plan': verdict.get('proposed_stop', '')
+                    })
+                
+                # Save the audit to session state so the download button doesn't disappear
+                st.session_state.guardian_audit_df = pd.DataFrame(audit_results)
+
+    # If an audit has been run, display the UI cards AND the download button
+    if st.session_state.guardian_audit_df is not None:
+        st.success("Audit Complete!")
+        
+        # Display the visual cards
+        for _, row in st.session_state.guardian_audit_df.iterrows():
+            with st.container(border=True):
+                st.markdown(f"### {row['Ticker']}  |  **Action:** `{row['Action']}`")
+                st.write(f"**Earnings Risk:** {row['Earnings Risk']}")
+                st.write(f"**Advice:** {row['AI Advice']}")
+                st.write(f"**Plan:** {row['Execution Plan']}")
+
+        # Merge Audit with Live Portfolio Data for the ultimate export
+        if st.session_state.live_port_df is not None:
+            export_df = pd.merge(st.session_state.live_port_df, st.session_state.guardian_audit_df, left_on='ticker', right_on='Ticker', how='left')
+        else:
+            export_df = pd.merge(df_port, st.session_state.guardian_audit_df, left_on='ticker', right_on='Ticker', how='left')
+            
+        # Create the Download Button
+        csv_port = export_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Full Portfolio & AI Audit Report (CSV)",
+            data=csv_port,
+            file_name=f"portfolio_audit_{datetime.today().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            type="primary"
+        )
 
 
 # ==========================================
@@ -275,11 +304,9 @@ with tab_radar:
     def get_sp500_tickers():
         try:
             url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-            # The Magic Mask: Pretend to be a normal Chrome browser
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
-            # Fetch the page with the headers
             response = requests.get(url, headers=headers)
             response.raise_for_status() 
             
@@ -290,7 +317,6 @@ with tab_radar:
             st.error(f"Failed to fetch S&P 500: {e}. Using default tech list.")
             return ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA"]
 
-    # Choose Universe
     universe_choice = st.radio("Select Universe:", ["Custom List", "S&P 500 (Full Scan)"], index=1, horizontal=True)
     if universe_choice == "Custom List":
         scan_tickers_input = st.text_input("Enter tickers (comma separated)", "AAPL, MSFT, NVDA, TSLA, AMD, INTC")
@@ -421,6 +447,17 @@ with tab_radar:
                                            f"- Max Risk if stopped out: **${sizing['Max_Loss_Risk']}**")
                             
                         st.markdown(row['Reasoning'])
+
+            # --- DOWNLOAD BUTTON FOR RADAR SCAN ---
+            st.divider()
+            csv_scan = df_final.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Complete AI Scan Report (CSV)",
+                data=csv_scan,
+                file_name=f"ai_radar_scan_{datetime.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                type="primary"
+            )
 
 # ==========================================
 # TAB 3: DEEP ANALYZER
