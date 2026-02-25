@@ -272,10 +272,30 @@ with tab_port:
         st.success("Audit Complete!")
         
         # Display the visual cards
+        # Display the visual cards with Color Coding
         for _, row in st.session_state.guardian_audit_df.iterrows():
             with st.container(border=True):
-                st.markdown(f"### {row['Ticker']}  |  **Action:** `{row['Action']}`")
-                st.write(f"**Earnings Risk:** {row['Earnings Risk']}")
+                action = str(row['Action']).upper()
+                
+                # Apply Streamlit's native markdown color tags
+                if 'SELL' in action:
+                    action_colored = f":red[**{action}**]"
+                elif 'TRIM' in action:
+                    action_colored = f":orange[**{action}**]"
+                elif 'KEEP' in action:
+                    action_colored = f":green[**{action}**]"
+                else:
+                    action_colored = f"**{action}**"
+
+                st.markdown(f"### {row['Ticker']}  |  Action: {action_colored}")
+                
+                # If Earnings Risk is elevated, color that too!
+                risk = str(row['Earnings Risk'])
+                if 'Critical' in risk or 'Elevated' in risk:
+                    st.write(f"**Earnings Risk:** :red[{risk}]")
+                else:
+                    st.write(f"**Earnings Risk:** {risk}")
+                    
                 st.write(f"**Advice:** {row['AI Advice']}")
                 st.write(f"**Plan:** {row['Execution Plan']}")
 
