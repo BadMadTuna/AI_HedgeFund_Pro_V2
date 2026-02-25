@@ -132,7 +132,7 @@ with tab_radar:
             return ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA"]
 
     # Choose Universe
-    universe_choice = st.radio("Select Universe:", ["Custom List", "S&P 500 (Full Scan)"], horizontal=True)
+    universe_choice = st.radio("Select Universe:", ["Custom List", "S&P 500 (Full Scan)"], index=1, horizontal=True)
     if universe_choice == "Custom List":
         scan_tickers_input = st.text_input("Enter tickers (comma separated)", "AAPL, MSFT, NVDA, TSLA, AMD, INTC")
         tickers_to_scan = [t.strip().upper() for t in scan_tickers_input.split(",")]
@@ -241,7 +241,28 @@ with tab_radar:
                 return ''
                 
             styled_df = df_final.style.map(highlight_verdict, subset=['Verdict'])
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            
+            # Use column_config to make the Reasoning column much wider in the table
+            st.dataframe(
+                styled_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Reasoning": st.column_config.TextColumn("Reasoning", width="large")
+                }
+            )
+
+            # Create a beautiful, readable dropdown list for the AI's actual paragraphs
+            st.divider()
+            st.subheader("📝 Detailed AI Reasoning")
+            st.write("Expand to read the full fundamental analysis for the top candidates.")
+            
+            # Only generate expanders for stocks the AI actually liked
+            for _, row in df_final.iterrows():
+                if row['Verdict'] in ['BUY', 'WATCH']: 
+                    with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
+                        st.write(f"**Quant Smoothness Score:** {row['Smooth Score']}")
+                        st.markdown(row['Reasoning'])
 
 # ==========================================
 # TAB 3: DEEP ANALYZER
