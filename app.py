@@ -3,6 +3,8 @@ import pandas as pd
 import concurrent.futures
 import requests
 import time
+import sqlite3
+from datetime import datetime
 from src.data_client import MarketDataClient
 from src.database import get_portfolio_df, get_journal_df
 from src.ai_agent import AIAgent
@@ -19,7 +21,7 @@ data_client, agent, pm = get_clients()
 
 # --- HEADER ---
 st.title("🦅 AI Hedge Fund Manager (Pro V2)")
-st.markdown("Powered by Tiingo, Gemini 2.5 Flash, and SQLite.")
+st.markdown("Powered by Tiingo, Gemini 2.5 Pro, and SQLite.")
 
 # --- TABS ---
 tab_port, tab_radar, tab_analyze, tab_journal = st.tabs([
@@ -37,6 +39,7 @@ with tab_port:
     # Initialize session state to hold live market data so it doesn't refresh randomly
     if "live_port_df" not in st.session_state:
         st.session_state.live_port_df = None
+        st.session_state.current_fx_rate = 1.0
 
     # --- REFRESH BUTTON & LOGIC ---
     col_btn, _ = st.columns([1, 4])
@@ -44,16 +47,42 @@ with tab_port:
         refresh_clicked = st.button("🔄 Refresh Live Prices & PnL", type="primary", use_container_width=True)
 
     if refresh_clicked and not df_port.empty:
-        with st.spinner("Fetching live market data from Tiingo..."):
+        with st.spinner("Fetching live market data and FX rates from Tiingo..."):
             
-            # Threading helper to fetch prices lightning fast
+            # 1. Fetch live USD to EUR exchange rate from Tiingo
+            try:
+                # Need to access the API key from your data_client
+                # Assuming data_client.api_key exists, otherwise fallback to a generic fetch if needed
+                api_key = getattr(data_client, 'api_key', None) 
+                if not api_key:
+                    # Quick hack if api_key isn't directly exposed on the object
+                    import os
+                    api_key = os.getenv("TIINGO_API_KEY")
+
+                fx_url = "https://api.tiingo.com/tiingo/fx/top"
+                fx_res = requests.get(fx_url, params={'tickers': 'eurusd', 'token': api_key})
+                fx_res.raise_for_status()
+                fx_data = fx_res.json()
+                
+                # eurusd gives us how many USD 1 EUR buys. To get USD to EUR multiplier, we invert it.
+                eur_usd_rate = fx_data[0]['midPrice']
+                usd_to_eur = 1.0 / eur_usd_rate
+            except Exception as e:
+                st.warning(f"Could not fetch live FX rate ({e}). Defaulting to 0.92.")
+                usd_to_eur = 0.92
+
+            # 2. Threading helper to fetch prices and INSTANTLY convert to Euros
             def fetch_live_price(row):
                 ticker = row['ticker']
                 if ticker == 'EUR':
                     return {'ticker': 'EUR', 'live_price': 1.0}
                 try:
                     tech = data_client.get_technicals(ticker)
-                    return {'ticker': ticker, 'live_price': tech['Price'] if tech else row['cost']}
+                    if tech and 'Price' in tech:
+                        # Convert USD price to EUR
+                        eur_price = tech['Price'] * usd_to_eur 
+                        return {'ticker': ticker, 'live_price': eur_price}
+                    return {'ticker': ticker, 'live_price': row['cost']}
                 except:
                     return {'ticker': ticker, 'live_price': row['cost']}
             
@@ -64,28 +93,29 @@ with tab_port:
             
             # Build the Enriched DataFrame
             live_df = df_port.copy()
-            live_df['Live Price'] = live_df['ticker'].map(live_prices)
-            live_df['Current Value'] = live_df['Live Price'] * live_df['quantity']
+            live_df['Live Price (€)'] = live_df['ticker'].map(live_prices)
+            live_df['Current Value (€)'] = live_df['Live Price (€)'] * live_df['quantity']
             
             # Calculate PnL (Ignoring Cash)
             is_stock = live_df['ticker'] != 'EUR'
             live_df['PnL (€)'] = 0.0
             live_df['PnL (%)'] = 0.0
             
-            live_df.loc[is_stock, 'PnL (€)'] = (live_df['Live Price'] - live_df['cost']) * live_df['quantity']
-            live_df.loc[is_stock, 'PnL (%)'] = ((live_df['Live Price'] - live_df['cost']) / live_df['cost']) * 100
+            live_df.loc[is_stock, 'PnL (€)'] = (live_df['Live Price (€)'] - live_df['cost']) * live_df['quantity']
+            live_df.loc[is_stock, 'PnL (%)'] = ((live_df['Live Price (€)'] - live_df['cost']) / live_df['cost']) * 100
             
             # Save it to session state
             st.session_state.live_port_df = live_df
+            st.session_state.current_fx_rate = usd_to_eur
 
     # --- DISPLAY METRICS & TABLE ---
     if st.session_state.live_port_df is not None:
         # 1. DISPLAY LIVE DATA
         live_df = st.session_state.live_port_df
         
-        cash = live_df[live_df['ticker'] == 'EUR']['Current Value'].sum() if 'EUR' in live_df['ticker'].values else 0.0
+        cash = live_df[live_df['ticker'] == 'EUR']['Current Value (€)'].sum() if 'EUR' in live_df['ticker'].values else 0.0
         invested_cost = live_df[live_df['ticker'] != 'EUR']['cost'].multiply(live_df[live_df['ticker'] != 'EUR']['quantity']).sum()
-        live_invested_val = live_df[live_df['ticker'] != 'EUR']['Current Value'].sum()
+        live_invested_val = live_df[live_df['ticker'] != 'EUR']['Current Value (€)'].sum()
         
         total_pnl_eur = live_df['PnL (€)'].sum()
         live_total_equity = cash + live_invested_val
@@ -98,15 +128,17 @@ with tab_port:
         col3.metric("📈 Total Return", f"{total_pnl_pct:+.2f}%", f"{total_pnl_eur:+,.2f} €")
         col4.metric("📊 Live Invested Value", f"€{live_invested_val:,.2f}")
         
+        st.caption(f"🌍 *Live USD to EUR Conversion Rate:* **{st.session_state.current_fx_rate:.4f}**")
+        
         # Enriched Live Holdings Table with Color Coding
         def color_pnl(val):
-            if isinstance(val, str): return ''
-            if val > 0: return 'color: #10b981;' # Profit = Green
-            elif val < 0: return 'color: #ef4444;' # Loss = Red
+            if isinstance(val, (int, float)):
+                if val > 0: return 'color: #10b981;' # Green
+                elif val < 0: return 'color: #ef4444;' # Red
             return ''
             
         styled_df = live_df.style.format({
-            'cost': '€{:.2f}', 'Live Price': '€{:.2f}', 'Current Value': '€{:.2f}', 
+            'cost': '€{:.2f}', 'Live Price (€)': '€{:.2f}', 'Current Value (€)': '€{:.2f}', 
             'PnL (€)': '€{:.2f}', 'PnL (%)': '{:.2f}%'
         }).map(color_pnl, subset=['PnL (€)', 'PnL (%)'])
         
@@ -145,7 +177,7 @@ with tab_port:
                     else:
                         st.error("Failed. Check cash balance or inputs.")
                         
-        # NEW: Bulk Portfolio Injection UI (Direct Database Bypass)
+        # Bulk Portfolio Injection UI (Direct Database Bypass)
         with st.expander("📥 Bulk Inject Existing Portfolio"):
             st.write("Easily onboard your existing stocks without deducting cash. **Format:** `TICKER, QUANTITY, AVG_PRICE`")
             st.write("*(Use 'EUR' to set your initial cash balance)*")
@@ -155,9 +187,6 @@ with tab_port:
                     "EUR, 50000, 1.0\nAAPL, 15, 175.50\nMSFT, 10, 400.00"
                 )
                 if st.form_submit_button("Force Inject Portfolio"):
-                    import sqlite3
-                    from datetime import datetime
-                    
                     try:
                         # Connect directly to the database file, bypassing the PortfolioManager
                         conn = sqlite3.connect("data/hedgefund.db")
@@ -168,7 +197,7 @@ with tab_port:
                             line = line.strip()
                             if line:
                                 parts = [p.strip() for p in line.split(',')]
-                                if len(parts) == 3:
+                                if len(parts) >= 3:
                                     ticker = parts[0].upper()
                                     qty = float(parts[1])
                                     price = float(parts[2])
@@ -232,6 +261,7 @@ with tab_port:
                         st.write(f"**Earnings Risk:** {verdict.get('earnings_risk', 'Unknown')}")
                         st.write(f"**Advice:** {verdict.get('reasoning', '')}")
                         st.write(f"**Plan:** {verdict.get('proposed_stop', '')}")
+
 
 # ==========================================
 # TAB 2: RADAR SCAN (TWO-TIER PIPELINE)
@@ -335,7 +365,7 @@ with tab_radar:
             final_results.append({
                 "Ticker": t,
                 "Price": tech_data['Price'],
-                "Smooth Score": tech_data['Smooth_Score'], # FIXED KEY HERE
+                "Smooth Score": tech_data['Smooth_Score'],
                 "AI Score": ai_res.get('score', 0),
                 "Verdict": ai_res.get('verdict', 'ERROR'),
                 "Earnings": earn,
