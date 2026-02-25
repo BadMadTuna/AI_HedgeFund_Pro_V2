@@ -215,7 +215,7 @@ with tab_radar:
             final_results.append({
                 "Ticker": t,
                 "Price": tech_data['Price'],
-                "Quant Score": tech_data['Quant_Score'],
+                "Quant Score": tech_data['Smooth_Score'],
                 "AI Score": ai_res.get('score', 0),
                 "Verdict": ai_res.get('verdict', 'ERROR'),
                 "Earnings": earn,
