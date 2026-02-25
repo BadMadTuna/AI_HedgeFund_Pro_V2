@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import concurrent.futures
 import requests
+import time
 from src.data_client import MarketDataClient
 from src.database import get_portfolio_df, get_journal_df
 from src.ai_agent import AIAgent
