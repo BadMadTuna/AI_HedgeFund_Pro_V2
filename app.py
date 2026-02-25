@@ -108,11 +108,21 @@ with tab_radar:
     st.write("Phase 1: Quantitative technical filter. Phase 2: AI fundamental deep dive on the Top 20.")
     
     # Helper: Fetch S&P 500 list from Wikipedia
+    # Helper: Fetch S&P 500 list from Wikipedia
     @st.cache_data(ttl=86400) # Cache for 24 hours so we don't spam Wikipedia
     def get_sp500_tickers():
         try:
             url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-            tables = pd.read_html(url)
+            # The Magic Mask: Pretend to be a normal Chrome browser
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            # Fetch the page with the headers
+            response = requests.get(url, headers=headers)
+            response.raise_for_status() # Check if the request was successful
+            
+            # Feed the raw HTML text into Pandas
+            tables = pd.read_html(response.text)
             df = tables[0]
             # Replace dots with dashes for yfinance/Tiingo compatibility (e.g., BRK.B -> BRK-B)
             return df['Symbol'].str.replace('.', '-').tolist()
