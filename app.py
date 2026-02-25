@@ -322,6 +322,27 @@ with tab_port:
 with tab_radar:
     st.header("🎯 Two-Tier AI Radar Scan")
     st.write("Phase 1: Quantitative technical filter. Phase 2: AI fundamental deep dive on the Top 20.")
+
+    # --- MARKET REGIME KILL SWITCH ---
+    with st.expander("🌍 Broad Market Regime Check", expanded=True):
+        with st.spinner("Checking S&P 500 trend..."):
+            regime = data_client.get_market_regime()
+            
+        if regime['Status'] != 'Unknown':
+            if regime['Color'] == 'red':
+                st.error(f"**{regime['Status']}**")
+                st.warning(f"The S&P 500 (SPY) is currently trading at **${regime['SPY_Price']}**, which is BELOW its 200-day moving average of **${regime['SPY_200_SMA']}**.\n\n"
+                           f"**Institutional Rule:** Do not deploy new capital into long positions during a structural downtrend. Capital preservation is priority #1.")
+                
+                # The Override Checkbox
+                override_killswitch = st.checkbox("⚠️ I understand the risks. Override the Kill Switch and allow scanning.")
+            else:
+                st.success(f"**{regime['Status']}**")
+                st.write(f"The S&P 500 (SPY) is trading at **${regime['SPY_Price']}**, ABOVE its 200-day moving average of **${regime['SPY_200_SMA']}**. Conditions are favorable for long positions.")
+                override_killswitch = True # Safe to scan
+        else:
+            st.warning("Could not determine market regime.")
+            override_killswitch = True
     
     # Helper: Fetch S&P 500 list from Wikipedia
     @st.cache_data(ttl=86400) # Cache for 24 hours so we don't spam Wikipedia
@@ -349,7 +370,10 @@ with tab_radar:
         tickers_to_scan = get_sp500_tickers()
         st.info(f"Loaded {len(tickers_to_scan)} tickers from S&P 500.")
 
-    if st.button("🚀 Launch Two-Tier Scan", type="primary"):
+    if not override_killswitch:
+        st.info("🛑 The Radar Scan is currently disabled by the Market Regime Kill Switch.")
+    else:
+        if st.button("🚀 Launch Two-Tier Scan", type="primary"):
         
         # --- PHASE 1: THE QUANT FILTER ---
         st.subheader("⚙️ Phase 1: Quantitative Filter")
@@ -359,19 +383,25 @@ with tab_radar:
         status_text = st.empty()
         
         def fetch_quant(t):
+            # 1. Get Sector for this ticker
+            sector_etf = data_client.get_sector_for_ticker(t)
+            
+            # 2. Check the Regime for that specific Sector
+            # (Note: In a production app, you'd cache this so you don't call Tiingo 500 times)
+            sector_regime = data_client.get_regime(sector_etf)
+            
+            # 3. Only proceed if Sector is RISK ON (Optional: you can just flag it instead)
             metrics = data_client.get_smart_momentum(t)
-            if not metrics: return None 
+            if not metrics: return None
             
-            tech = data_client.get_technicals(t)
-            if not tech: return None
-            
+            # Add sector health to the results
             result = {
                 'Ticker': t,
+                'Sector': sector_etf,
+                'Sector Health': sector_regime['status'] if sector_regime else "Unknown",
                 'Price': metrics['Current_Price'],
-                '12m-1m Return': f"{metrics['Momentum_12m_1m'] * 100:.2f}%",
-                'Volatility': f"{metrics['Annual_Volatility'] * 100:.2f}%",
                 'Smooth_Score': metrics['Smooth_Score'],
-                **tech 
+                # ... existing technicals ...
             }
             return result
 

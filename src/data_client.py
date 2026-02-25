@@ -134,6 +134,58 @@ class MarketDataClient:
         except Exception as e:
             return None
         
+    class MarketDataClient:
+    # 1. Add this Sector Map inside the class
+    SECTOR_MAP = {
+        'XLK': ['AAPL', 'MSFT', 'NVDA', 'AVGO', 'ORCL', 'ADBE', 'CRM', 'AMD', 'QCOM', 'TXN', 'INTC', 'MU', 'LRCX', 'ADI', 'AMAT', 'KLAC'],
+        'XLY': ['AMZN', 'TSLA', 'HD', 'MCD', 'NKE', 'LOW', 'SBUX', 'BKNG', 'TJX', 'ORLY', 'MAR', 'F', 'GM', 'DG', 'EBAY'],
+        'XLF': ['BRK-B', 'JPM', 'V', 'MA', 'BAC', 'WFC', 'GS', 'MS', 'AXP', 'BLK', 'C', 'CB', 'PGR', 'SCHW'],
+        'XLE': ['XOM', 'CVX', 'COP', 'SLB', 'EOG', 'MPC', 'PSX', 'VLO', 'HAL', 'DVN', 'HES', 'OXY'],
+        'XLV': ['LLY', 'UNH', 'JNJ', 'ABBV', 'MRK', 'TMO', 'ABT', 'PFE', 'DHR', 'AMGN', 'ISRG', 'BMY', 'MRNA', 'GILD'],
+        'XLI': ['GE', 'CAT', 'UNP', 'HON', 'RTX', 'LMT', 'DE', 'BA', 'UPS', 'MMM', 'HII', 'PCAR', 'FEDEX', 'GEV'],
+        'XLP': ['PG', 'KO', 'PEP', 'COST', 'WMT', 'PM', 'EL', 'MO', 'CL', 'KMB', 'STZ', 'SYY'],
+        'XLB': ['LIN', 'SHW', 'APD', 'FCX', 'NEM', 'ECL', 'ALB', 'DOW', 'CTVA'],
+        'XLC': ['GOOGL', 'GOOG', 'META', 'NFLX', 'DIS', 'TMUS', 'VZ', 'T', 'CHTR', 'WBD'],
+        'XLU': ['NEE', 'SO', 'DUK', 'AEP', 'D', 'EXC', 'PCG', 'SRE', 'ED'],
+        'XLRE': ['PLD', 'AMT', 'EQIX', 'CCI', 'PSA', 'O', 'SBAC', 'WELL']
+    }
+
+    # 2. Update the regime method to be generic
+    def get_regime(self, ticker='SPY'):
+        """Fetches trend regime for a specific ticker (SPY or Sector ETF)."""
+        import pandas as pd
+        from datetime import datetime, timedelta
+        import requests
+
+        try:
+            end_date = datetime.today()
+            start_date = end_date - timedelta(days=380)
+            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+            params = {'startDate': start_date.strftime('%Y-%m-%d'), 'token': self.api_key}
+            
+            res = requests.get(url, params=params)
+            df = pd.DataFrame(res.json())
+            
+            current_price = df['close'].iloc[-1]
+            sma_200 = df['close'].rolling(window=200).mean().iloc[-1]
+            status = "RISK ON" if current_price > sma_200 else "RISK OFF"
+            
+            return {
+                'status': status,
+                'price': round(current_price, 2),
+                'sma': round(sma_200, 2),
+                'bullish': current_price > sma_200
+            }
+        except:
+            return None
+
+    def get_sector_for_ticker(self, ticker):
+        """Finds which XL-ETF a ticker belongs to."""
+        for sector_etf, members in self.SECTOR_MAP.items():
+            if ticker in members:
+                return sector_etf
+        return 'SPY' # Fallback to broad market if not in map
+        
     def get_smart_momentum(self, ticker):
         """
         Fetches historical data and calculates Volatility-Adjusted 12-minus-1 Momentum.
