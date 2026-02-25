@@ -263,111 +263,106 @@ with tab_radar:
             
         if regime:
             if not regime['bullish']:
-                st.error("🔴 RISK OFF")
-                st.warning(f"SPY is trading at ${regime['price']}, BELOW its 200-day SMA of ${regime['sma']}.")
-                override_killswitch = st.checkbox("⚠️ Override Kill Switch and allow scanning.")
+                st.error("🔴 RISK OFF: Broad Market is in a Downtrend")
+                st.warning(f"SPY is trading at ${regime['price']}, BELOW its 200-day SMA of ${regime['sma']}. Institutional models suggest caution, but scanning is enabled.")
             else:
-                st.success("🟢 RISK ON")
+                st.success("🟢 RISK ON: Broad Market is in an Uptrend")
                 st.write(f"SPY is trading at ${regime['price']}, ABOVE its 200-day SMA of ${regime['sma']}.")
-                override_killswitch = True
         else:
             st.warning("Regime check failed.")
-            override_killswitch = True
 
     tickers_to_scan = get_sp500_tickers()
 
-    if not override_killswitch:
-        st.info("🛑 Radar Scan disabled by Kill Switch to protect capital.")
-    else:
-        if st.button("🚀 Launch Two-Tier Scan", type="primary"):
-            st.subheader("⚙️ Phase 1: Quantitative Filter")
-            quant_results = []
-            progress_bar = st.progress(0)
+    # The Scan Button is now ALWAYS active, no checkbox override required
+    if st.button("🚀 Launch Two-Tier Scan", type="primary"):
+        st.subheader("⚙️ Phase 1: Quantitative Filter")
+        quant_results = []
+        progress_bar = st.progress(0)
+        
+        def fetch_quant(t):
+            sector_etf = data_client.get_sector_for_ticker(t)
+            sector_regime = data_client.get_regime(sector_etf)
+            metrics = data_client.get_smart_momentum(t)
+            if not metrics: return None
             
-            def fetch_quant(t):
-                sector_etf = data_client.get_sector_for_ticker(t)
-                sector_regime = data_client.get_regime(sector_etf)
-                metrics = data_client.get_smart_momentum(t)
-                if not metrics: return None
+            tech = data_client.get_technicals(t)
+            if not tech: return None
+
+            return {
+                'Ticker': t, 'Sector': sector_etf,
+                'Sector Health': sector_regime['status'] if sector_regime else "Unknown",
+                'Price': metrics['Current_Price'], 'Smooth_Score': metrics['Smooth_Score'],
+                **tech
+            }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch_quant, t): t for t in tickers_to_scan}
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                res = future.result()
+                if res: quant_results.append(res)
+                progress_bar.progress((i + 1) / len(tickers_to_scan))
+        
+        if quant_results:
+            df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
+            top_20_df = df_quant.head(20)
+            st.dataframe(top_20_df, use_container_width=True)
+
+            st.subheader("🧠 Phase 2: AI Deep Dive (Top 20)")
+            final_results = []
+            ai_progress = st.progress(0)
+
+            for i, t in enumerate(top_20_df['Ticker']):
+                tech_data = top_20_df.iloc[i].to_dict()
+                news = data_client.get_news(t)
+                earn = data_client.get_earnings_date(t)
+                ai_res = agent.get_hunter_verdict(t, tech_data, news, earn)
                 
-                tech = data_client.get_technicals(t)
-                if not tech: return None
+                final_results.append({
+                    "Ticker": t, "Price": tech_data['Price'], "Sector": tech_data['Sector'], 
+                    "Sector Health": tech_data['Sector Health'], "Smooth Score": tech_data['Smooth_Score'],
+                    "AI Score": ai_res.get('score', 0), "Verdict": ai_res.get('verdict', 'ERROR'),
+                    "Earnings": earn, "Reasoning": ai_res.get('reasoning', '')
+                })
+                ai_progress.progress((i + 1) / len(top_20_df))
+                time.sleep(1) 
 
-                return {
-                    'Ticker': t, 'Sector': sector_etf,
-                    'Sector Health': sector_regime['status'] if sector_regime else "Unknown",
-                    'Price': metrics['Current_Price'], 'Smooth_Score': metrics['Smooth_Score'],
-                    **tech
-                }
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(fetch_quant, t): t for t in tickers_to_scan}
-                for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                    res = future.result()
-                    if res: quant_results.append(res)
-                    progress_bar.progress((i + 1) / len(tickers_to_scan))
+            df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
             
-            if quant_results:
-                df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
-                top_20_df = df_quant.head(20)
-                st.dataframe(top_20_df, use_container_width=True)
-
-                st.subheader("🧠 Phase 2: AI Deep Dive (Top 20)")
-                final_results = []
-                ai_progress = st.progress(0)
-
-                for i, t in enumerate(top_20_df['Ticker']):
-                    tech_data = top_20_df.iloc[i].to_dict()
-                    news = data_client.get_news(t)
-                    earn = data_client.get_earnings_date(t)
-                    ai_res = agent.get_hunter_verdict(t, tech_data, news, earn)
-                    
-                    final_results.append({
-                        "Ticker": t, "Price": tech_data['Price'], "Sector": tech_data['Sector'], 
-                        "Sector Health": tech_data['Sector Health'], "Smooth Score": tech_data['Smooth_Score'],
-                        "AI Score": ai_res.get('score', 0), "Verdict": ai_res.get('verdict', 'ERROR'),
-                        "Earnings": earn, "Reasoning": ai_res.get('reasoning', '')
-                    })
-                    ai_progress.progress((i + 1) / len(top_20_df))
-                    time.sleep(1) 
-
-                df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
+            def highlight_verdict(val):
+                if val == 'BUY': return 'background-color: #064e3b; color: white;' 
+                elif val == 'WATCH': return 'background-color: #78350f; color: white;' 
+                elif val == 'AVOID': return 'background-color: #7f1d1d; color: white;' 
+                return ''
                 
-                def highlight_verdict(val):
-                    if val == 'BUY': return 'background-color: #064e3b; color: white;' 
-                    elif val == 'WATCH': return 'background-color: #78350f; color: white;' 
-                    elif val == 'AVOID': return 'background-color: #7f1d1d; color: white;' 
-                    return ''
-                    
-                st.dataframe(df_final.style.map(highlight_verdict, subset=['Verdict']), use_container_width=True, hide_index=True)
+            st.dataframe(df_final.style.map(highlight_verdict, subset=['Verdict']), use_container_width=True, hide_index=True)
 
-                st.divider()
-                st.subheader("📝 Detailed AI Reasoning & Trade Sizing")
-                
-                # Fetch equity for sizing math
-                equity_summary = pm.get_equity_summary()
-                ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
+            st.divider()
+            st.subheader("📝 Detailed AI Reasoning & Trade Sizing")
+            
+            # Fetch equity for sizing math
+            equity_summary = pm.get_equity_summary()
+            ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
 
-                for _, row in df_final.iterrows():
-                    if row['Verdict'] in ['BUY', 'WATCH']: 
-                        with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
-                            st.write(f"**Sector:** {row['Sector']} ({row['Sector Health']}) | **Smooth Score:** {row['Smooth Score']}")
-                            
-                            if row['Verdict'] == 'BUY':
-                                sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=ACCOUNT_SIZE, risk_pct=0.01)
-                                if sizing:
-                                    st.success(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Equity):**\n"
-                                               f"- Buy **{sizing['Shares']} shares** at approx **${sizing['Current_Price']}**\n"
-                                               f"- Total Capital Deployed: **${sizing['Total_Investment']:,}**\n"
-                                               f"- Hard Stop Loss: **${sizing['Stop_Loss']}** (2x ATR)\n"
-                                               f"- Max Risk if stopped out: **${sizing['Max_Loss_Risk']}**")
-                            st.markdown(row['Reasoning'])
-                
-                st.divider()
-                st.download_button("📥 Download Complete AI Scan Report (CSV)", 
-                                   df_final.to_csv(index=False).encode('utf-8'), 
-                                   f"ai_radar_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
-                                   "text/csv")
+            for _, row in df_final.iterrows():
+                if row['Verdict'] in ['BUY', 'WATCH']: 
+                    with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
+                        st.write(f"**Sector:** {row['Sector']} ({row['Sector Health']}) | **Smooth Score:** {row['Smooth Score']}")
+                        
+                        if row['Verdict'] == 'BUY':
+                            sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=ACCOUNT_SIZE, risk_pct=0.01)
+                            if sizing:
+                                st.success(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Equity):**\n"
+                                           f"- Buy **{sizing['Shares']} shares** at approx **${sizing['Current_Price']}**\n"
+                                           f"- Total Capital Deployed: **${sizing['Total_Investment']:,}**\n"
+                                           f"- Hard Stop Loss: **${sizing['Stop_Loss']}** (2x ATR)\n"
+                                           f"- Max Risk if stopped out: **${sizing['Max_Loss_Risk']}**")
+                        st.markdown(row['Reasoning'])
+            
+            st.divider()
+            st.download_button("📥 Download Complete AI Scan Report (CSV)", 
+                               df_final.to_csv(index=False).encode('utf-8'), 
+                               f"ai_radar_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
+                               "text/csv")
 
 # ==========================================
 # TAB 3 & 4
