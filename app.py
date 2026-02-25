@@ -117,7 +117,7 @@ with tab_radar:
             # Replace dots with dashes for yfinance/Tiingo compatibility (e.g., BRK.B -> BRK-B)
             return df['Symbol'].str.replace('.', '-').tolist()
         except Exception as e:
-            st.error("Failed to fetch S&P 500. Using default tech list.")
+            st.error(f"Failed to fetch S&P 500: {e}. Using default tech list.")
             return ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA"]
 
     # Choose Universe
