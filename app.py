@@ -48,11 +48,11 @@ with tab_port:
 
     # 3. Actions & AI Audit
     st.markdown("---")
-    st.subheader("🛠️ Management & AI Guardian")
+    st.subheader("🛠️ Management & Portfolio Injection")
     m_col1, m_col2 = st.columns(2)
     
     with m_col1:
-        with st.expander("➕ Add Position / Deposit Cash"):
+        with st.expander("➕ Add Single Position / Deposit Cash"):
             with st.form("buy_form"):
                 b_ticker = st.text_input("Ticker (Use 'EUR' for Cash)", "AAPL").upper()
                 b_price = st.number_input("Entry Price (1.0 for EUR)", min_value=0.0, value=150.0, format="%.2f")
@@ -65,6 +65,28 @@ with tab_port:
                         st.rerun()
                     else:
                         st.error("Failed. Check cash balance or inputs.")
+                        
+        # NEW: Bulk Portfolio Injection UI
+        with st.expander("📥 Bulk Inject Existing Portfolio"):
+            st.write("Easily onboard your existing stocks. **Format:** `TICKER, QUANTITY, AVG_PRICE`")
+            st.write("*(Use 'EUR' to set your initial cash balance)*")
+            with st.form("bulk_inject_form"):
+                bulk_data = st.text_area(
+                    "Paste your portfolio data here:", 
+                    "EUR, 50000, 1.0\nAAPL, 15, 175.50\nMSFT, 10, 400.00"
+                )
+                if st.form_submit_button("Inject Portfolio"):
+                    success_count = 0
+                    for line in bulk_data.split('\n'):
+                        if line.strip():
+                            parts = [p.strip() for p in line.split(',')]
+                            if len(parts) == 3:
+                                ticker, qty, price = parts[0].upper(), float(parts[1]), float(parts[2])
+                                # Target = 0.0 for injected positions
+                                if pm.execute_buy(ticker, price, qty, 0.0):
+                                    success_count += 1
+                    st.success(f"Successfully injected {success_count} positions into the database!")
+                    st.rerun()
                         
     with m_col2:
         with st.expander("✂️ Sell / Trim Position"):
@@ -109,7 +131,6 @@ with tab_radar:
     st.write("Phase 1: Quantitative technical filter. Phase 2: AI fundamental deep dive on the Top 20.")
     
     # Helper: Fetch S&P 500 list from Wikipedia
-    # Helper: Fetch S&P 500 list from Wikipedia
     @st.cache_data(ttl=86400) # Cache for 24 hours so we don't spam Wikipedia
     def get_sp500_tickers():
         try:
@@ -120,12 +141,10 @@ with tab_radar:
             }
             # Fetch the page with the headers
             response = requests.get(url, headers=headers)
-            response.raise_for_status() # Check if the request was successful
+            response.raise_for_status() 
             
-            # Feed the raw HTML text into Pandas
             tables = pd.read_html(response.text)
             df = tables[0]
-            # Replace dots with dashes for yfinance/Tiingo compatibility (e.g., BRK.B -> BRK-B)
             return df['Symbol'].str.replace('.', '-').tolist()
         except Exception as e:
             st.error(f"Failed to fetch S&P 500: {e}. Using default tech list.")
@@ -150,26 +169,22 @@ with tab_radar:
         status_text = st.empty()
         
         def fetch_quant(t):
-            # Fetch our new institutional metrics
             metrics = data_client.get_smart_momentum(t)
-            if not metrics: return None # Skip stocks with insufficient history
+            if not metrics: return None 
             
-            # Fetch the basic technicals (RSI, etc.) to feed the AI later
             tech = data_client.get_technicals(t)
             if not tech: return None
             
-            # Combine everything into one master dictionary
             result = {
                 'Ticker': t,
                 'Price': metrics['Current_Price'],
                 '12m-1m Return': f"{metrics['Momentum_12m_1m'] * 100:.2f}%",
                 'Volatility': f"{metrics['Annual_Volatility'] * 100:.2f}%",
                 'Smooth_Score': metrics['Smooth_Score'],
-                **tech # Adds RSI, SMAs, etc.
+                **tech 
             }
             return result
 
-        # Use Threading to fetch technicals at lightning speed
         status_text.text(f"Calculating Volatility-Adjusted Momentum for {len(tickers_to_scan)} stocks...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(fetch_quant, t): t for t in tickers_to_scan}
@@ -182,7 +197,6 @@ with tab_radar:
             st.error("Phase 1 failed. Check data connection.")
             st.stop()
             
-        # IMPORTANT: We now sort by Smooth_Score instead of the old mechanical Quant_Score
         df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
         top_20_df = df_quant.head(20)
         
@@ -202,20 +216,16 @@ with tab_radar:
         for i, t in enumerate(top_tickers):
             ai_status.text(f"AI analyzing {t} ({i+1}/{len(top_tickers)})...")
             
-            # Fetch Qualitative Data
             news = data_client.get_news(t)
             earn = data_client.get_earnings_date(t)
-            
-            # Retrieve the quant data we already pulled
             tech_data = top_20_df[top_20_df['Ticker'] == t].iloc[0].to_dict()
             
-            # Ask Gemini
             ai_res = agent.get_hunter_verdict(t, tech_data, news, earn)
             
             final_results.append({
                 "Ticker": t,
                 "Price": tech_data['Price'],
-                "Quant Score": tech_data['Smooth_Score'],
+                "Smooth Score": tech_data['Smooth_Score'], # FIXED KEY HERE
                 "AI Score": ai_res.get('score', 0),
                 "Verdict": ai_res.get('verdict', 'ERROR'),
                 "Earnings": earn,
@@ -223,8 +233,6 @@ with tab_radar:
             })
             
             ai_progress.progress((i + 1) / len(top_tickers))
-            
-            # Pace the AI calls to respect Google's free tier (15 Requests Per Minute)
             time.sleep(4) 
             
         ai_status.text("Scan Complete!")
@@ -233,16 +241,14 @@ with tab_radar:
         if final_results:
             df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
             
-            # Highlight the verdicts
             def highlight_verdict(val):
-                if val == 'BUY': return 'background-color: #064e3b; color: white;' # Dark Green
-                elif val == 'WATCH': return 'background-color: #78350f; color: white;' # Dark Orange
-                elif val == 'AVOID': return 'background-color: #7f1d1d; color: white;' # Dark Red
+                if val == 'BUY': return 'background-color: #064e3b; color: white;' 
+                elif val == 'WATCH': return 'background-color: #78350f; color: white;' 
+                elif val == 'AVOID': return 'background-color: #7f1d1d; color: white;' 
                 return ''
                 
             styled_df = df_final.style.map(highlight_verdict, subset=['Verdict'])
             
-            # Use column_config to make the Reasoning column much wider in the table
             st.dataframe(
                 styled_df, 
                 use_container_width=True, 
@@ -252,24 +258,23 @@ with tab_radar:
                 }
             )
 
-            # Create a beautiful, readable dropdown list for the AI's actual paragraphs
             st.divider()
             st.subheader("📝 Detailed AI Reasoning & Trade Sizing")
             st.write("Expand to read the full fundamental analysis and exact trade execution specs.")
             
-            # Assuming a $100,000 mock account for sizing. You can change this!
-            ACCOUNT_SIZE = 100000 
+            # dynamically fetch real total equity from your DB
+            equity_summary = pm.get_equity_summary()
+            ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
             
             for _, row in df_final.iterrows():
                 if row['Verdict'] in ['BUY', 'WATCH']: 
                     with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
                         st.write(f"**Quant Smoothness Score:** {row['Smooth Score']}")
                         
-                        # Only calculate the complex ATR math if we are actually considering buying it
                         if row['Verdict'] == 'BUY':
                             sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=ACCOUNT_SIZE, risk_pct=0.01)
                             if sizing:
-                                st.success(f"**Execution Plan (1% Risk on ${ACCOUNT_SIZE:,}):**\n"
+                                st.success(f"**Execution Plan (1% Risk on ${ACCOUNT_SIZE:,.2f} Total Equity):**\n"
                                            f"- Buy **{sizing['Shares']} shares** at approx **${sizing['Current_Price']}**\n"
                                            f"- Total Capital Deployed: **${sizing['Total_Investment']:,}**\n"
                                            f"- Hard Stop Loss: **${sizing['Stop_Loss']}** (2x ATR)\n"
