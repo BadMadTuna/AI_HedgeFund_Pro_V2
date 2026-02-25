@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 import yfinance as yf
+import numpy as np
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -63,6 +64,64 @@ class MarketDataClient:
             }
         except Exception as e:
             print(f"Error fetching technicals for {ticker}: {e}")
+            return None
+        
+    def get_smart_momentum(self, ticker):
+        """
+        Fetches historical data and calculates Volatility-Adjusted 12-minus-1 Momentum.
+        """
+        import pandas as pd
+        import numpy as np
+        from datetime import datetime, timedelta
+        import requests
+
+        try:
+            # We look back 380 calendar days to guarantee we get at least 252 trading days
+            end_date = datetime.today()
+            start_date = end_date - timedelta(days=380)
+            
+            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+            params = {
+                'startDate': start_date.strftime('%Y-%m-%d'),
+                'endDate': end_date.strftime('%Y-%m-%d'),
+                'token': self.api_key # Ensure this matches your Tiingo initialization!
+            }
+            
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            # If a stock IPO'd recently, it won't have enough data. We skip it.
+            if len(data) < 252:
+                return None 
+                
+            df = pd.DataFrame(data)
+            df['close'] = df['close'].astype(float)
+            
+            # 1. Volatility Calculation
+            daily_returns = df['close'].pct_change()
+            annual_volatility = daily_returns.std() * np.sqrt(252)
+            
+            # 2. 12-Minus-1 Momentum Calculation (Using .iloc to grab exact days from the end)
+            price_t_21 = df['close'].iloc[-21]
+            price_t_252 = df['close'].iloc[-252]
+            momentum_12m_1m = (price_t_21 - price_t_252) / price_t_252
+            
+            # 3. The Smoothness Score
+            if annual_volatility == 0:
+                smooth_score = 0
+            else:
+                smooth_score = momentum_12m_1m / annual_volatility
+                
+            return {
+                'Current_Price': df['close'].iloc[-1],
+                'Momentum_12m_1m': round(momentum_12m_1m, 4),
+                'Annual_Volatility': round(annual_volatility, 4),
+                'Smooth_Score': round(smooth_score, 4)
+            }
+            
+        except Exception as e:
+            # If Tiingo fails or ticker is delisted, silently skip it
             return None
 
     def get_news(self, ticker: str) -> str:

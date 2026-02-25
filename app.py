@@ -150,21 +150,27 @@ with tab_radar:
         status_text = st.empty()
         
         def fetch_quant(t):
+            # Fetch our new institutional metrics
+            metrics = data_client.get_smart_momentum(t)
+            if not metrics: return None # Skip stocks with insufficient history
+            
+            # Fetch the basic technicals (RSI, etc.) to feed the AI later
             tech = data_client.get_technicals(t)
             if not tech: return None
             
-            # Mechanical Quant Scoring Engine (Max 100)
-            score = 0
-            if tech['Price'] > tech['SMA_50']: score += 30      # Short-term trend up
-            if tech['SMA_50'] > tech['SMA_200']: score += 30    # Long-term trend up
-            if 40 <= tech['RSI'] <= 70: score += 40             # Healthy momentum (not overbought/oversold)
-            elif tech['RSI'] < 40: score += 20                  # Value territory
-            
-            tech['Quant_Score'] = score
-            return tech
+            # Combine everything into one master dictionary
+            result = {
+                'Ticker': t,
+                'Price': metrics['Current_Price'],
+                '12m-1m Return': f"{metrics['Momentum_12m_1m'] * 100:.2f}%",
+                'Volatility': f"{metrics['Annual_Volatility'] * 100:.2f}%",
+                'Smooth_Score': metrics['Smooth_Score'],
+                **tech # Adds RSI, SMAs, etc.
+            }
+            return result
 
         # Use Threading to fetch technicals at lightning speed
-        status_text.text(f"Fetching technicals for {len(tickers_to_scan)} stocks...")
+        status_text.text(f"Calculating Volatility-Adjusted Momentum for {len(tickers_to_scan)} stocks...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(fetch_quant, t): t for t in tickers_to_scan}
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
@@ -176,8 +182,8 @@ with tab_radar:
             st.error("Phase 1 failed. Check data connection.")
             st.stop()
             
-        # Sort and take Top 20
-        df_quant = pd.DataFrame(quant_results).sort_values(by="Quant_Score", ascending=False)
+        # IMPORTANT: We now sort by Smooth_Score instead of the old mechanical Quant_Score
+        df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
         top_20_df = df_quant.head(20)
         
         st.success(f"Phase 1 Complete! Filtered down to top {len(top_20_df)} candidates.")
