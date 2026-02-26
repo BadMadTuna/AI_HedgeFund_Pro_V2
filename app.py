@@ -208,6 +208,58 @@ with tab_port:
                         st.error("Failed. Ensure you own enough shares of the stock.")
 
     st.markdown("---")
+
+    # --- PORTFOLIO CORRELATION MATRIX ---
+    st.markdown("---")
+    st.subheader("🕸️ Portfolio Correlation Matrix")
+    with st.expander("Analyze Cross-Asset Risk & Diversification", expanded=False):
+        active_tickers = df_port[df_port['ticker'] != 'EUR']['ticker'].unique().tolist()
+        
+        if len(active_tickers) < 2:
+            st.info("You need at least 2 active stock positions to calculate correlation.")
+        else:
+            if st.button("Generate Correlation Heatmap"):
+                with st.spinner("Downloading 6-month historical returns for your portfolio..."):
+                    import yfinance as yf
+                    try:
+                        # Fetch 6 months of daily close data
+                        data = yf.download(active_tickers, period="6m", progress=False)['Close']
+                        
+                        # Handle multi-index columns if yfinance returns them
+                        if isinstance(data.columns, pd.MultiIndex):
+                            data.columns = data.columns.droplevel(1)
+                            
+                        # Calculate daily returns and Pearson correlation
+                        returns = data.pct_change().dropna()
+                        corr_matrix = returns.corr()
+                        
+                        st.write("**Pearson Correlation Coefficient (Last 6 Months):**")
+                        st.caption("🔴 :red[**Red**] = Danger/High Correlation (Moves Together) | 🟢 :green[**Green**] = Safe/Low Correlation (Moves Independently)")
+                        
+                        # Format the table as a Red/Green Heatmap
+                        styled_corr = corr_matrix.style.background_gradient(cmap='RdYlGn_r', vmin=-0.5, vmax=1.0).format("{:.2f}")
+                        st.dataframe(styled_corr, use_container_width=True)
+                        
+                        # Automated Concentration Risk Warning
+                        high_corr_pairs = []
+                        cols = corr_matrix.columns
+                        for i in range(len(cols)):
+                            for j in range(i+1, len(cols)):
+                                if corr_matrix.iloc[i, j] > 0.70: # 0.70 is the institutional danger threshold
+                                    high_corr_pairs.append(f"**{cols[i]}** & **{cols[j]}** ({corr_matrix.iloc[i, j]:.2f})")
+                                    
+                        if high_corr_pairs:
+                            st.error(f"**⚠️ Concentration Risk Detected:** The following pairs are highly correlated (>0.70). If one drops, the other is highly likely to crash with it. Consider rotating one out:")
+                            for pair in high_corr_pairs:
+                                st.write(f"- {pair}")
+                        else:
+                            st.success("**✅ Healthy Diversification:** No dangerously correlated pairs detected. Your portfolio risk is well-distributed!")
+                            
+                    except Exception as e:
+                        st.error(f"Failed to generate correlation matrix. Please try again. ({e})")
+                        
+    st.markdown("---") # Visual separator before the Guardian
+
     if st.button("🛡️ Run AI Guardian Audit on Portfolio"):
         audit_df = st.session_state.live_port_df if st.session_state.live_port_df is not None else df_port
         if audit_df.empty or len(audit_df[audit_df['ticker'] != 'EUR']) == 0:
