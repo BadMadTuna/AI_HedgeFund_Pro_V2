@@ -557,27 +557,43 @@ with tab_analyze:
     a_ticker = st.text_input("Ticker to Analyze", "NVDA").upper()
     
     if st.button("Analyze Stock"):
-        with st.spinner("Gathering data..."):
+        with st.spinner("Gathering technicals, fundamentals, and news..."):
             tech = data_client.get_technicals(a_ticker)
             if not tech:
                 st.error("Could not fetch data. Check ticker.")
             else:
+                # 1. Fetch Fundamentals
+                funds = data_client.get_fundamentals(a_ticker)
                 news = data_client.get_news(a_ticker)
                 earn = data_client.get_earnings_date(a_ticker)
                 
-                c1, c2, c3 = st.columns(3)
+                # 2. Merge Technicals + Fundamentals so the AI can read them together
+                tech_fund_data = {
+                    **tech,
+                    'ROE': f"{funds.get('ROE', 0):.1%}",
+                    'Margin': f"{funds.get('Gross_Margin', 0):.1%}",
+                    'EV/EBITDA': round(funds.get('EV_EBITDA', 0), 1)
+                }
+                
+                # 3. Display the expanded data metrics
+                c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Current Price", f"${tech['Price']}")
                 c2.metric("RSI (14)", tech['RSI'])
-                c3.metric("Earnings Status", earn)
+                c3.metric("ROE", tech_fund_data['ROE'])
+                c4.metric("EV/EBITDA", tech_fund_data['EV/EBITDA'])
+                c5.metric("Earnings", earn)
                 
                 st.markdown("### 📰 Recent News")
                 st.text(news)
                 
-                st.markdown("### 🧠 AI Verdict")
-                ai_res = agent.get_hunter_verdict(a_ticker, tech, news, earn)
+                st.markdown("### 🧠 Quantamental AI Verdict")
+                # 4. Pass the MERGED dictionary to the AI Hunter
+                ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn)
+                
                 if ai_res.get('verdict') == "BUY": st.success(f"Score: {ai_res.get('score')} | Verdict: BUY")
                 elif ai_res.get('verdict') == "WATCH": st.warning(f"Score: {ai_res.get('score')} | Verdict: WATCH")
                 else: st.error(f"Score: {ai_res.get('score')} | Verdict: AVOID")
+                
                 st.write(ai_res.get('reasoning'))
 
 with tab_journal:
