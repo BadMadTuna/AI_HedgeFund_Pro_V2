@@ -69,38 +69,64 @@ with tab_port:
         refresh_clicked = st.button("🔄 Refresh Live Prices & PnL", type="primary", use_container_width=True)
 
     if refresh_clicked and not df_port.empty:
-        with st.spinner("Fetching live market data and FX rates from Tiingo..."):
+        with st.spinner("Fetching real-time IEX top-of-book prices via Tiingo..."):
             try:
                 api_key = getattr(data_client, 'api_key', None) 
                 if not api_key: api_key = os.getenv("TIINGO_API_KEY")
 
+                # 1. Fetch live FX rate (EUR/USD)
                 fx_url = "https://api.tiingo.com/tiingo/fx/top"
                 fx_res = requests.get(fx_url, params={'tickers': 'eurusd', 'token': api_key})
                 fx_res.raise_for_status()
-                fx_data = fx_res.json()
-                
-                eur_usd_rate = fx_data[0]['midPrice']
-                usd_to_eur = 1.0 / eur_usd_rate
+                usd_to_eur = 1.0 / fx_res.json()[0]['midPrice']
             except Exception as e:
                 st.warning(f"Could not fetch live FX rate ({e}). Defaulting to 0.92.")
                 usd_to_eur = 0.92
 
-            def fetch_live_price(row):
-                ticker = row['ticker']
-                if ticker == 'EUR': return {'ticker': 'EUR', 'live_price': 1.0}
+            # 2. Sort tickers into US (Tiingo IEX) and EU (YFinance Fallback)
+            us_tickers = []
+            eu_tickers = []
+            live_prices = {'EUR': 1.0}
+            
+            for t in df_port['ticker'].unique():
+                if t == 'EUR': continue
+                elif "." in t: eu_tickers.append(t)
+                else: us_tickers.append(t)
+
+            # 3. BULK FETCH US Real-Time Prices (Tiingo IEX)
+            if us_tickers and api_key:
                 try:
-                    tech = data_client.get_technicals(ticker)
-                    if tech and 'Price' in tech:
-                        return {'ticker': ticker, 'live_price': tech['Price'] * usd_to_eur}
-                    return {'ticker': ticker, 'live_price': row['cost']}
-                except: return {'ticker': ticker, 'live_price': row['cost']}
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(fetch_live_price, row): row for _, row in df_port.iterrows()}
-                live_prices = {fut.result()['ticker']: fut.result()['live_price'] for fut in concurrent.futures.as_completed(futures)}
-            
+                    iex_url = "https://api.tiingo.com/iex/"
+                    # Ask Tiingo for all US stocks in one single request
+                    iex_res = requests.get(iex_url, params={'tickers': ",".join(us_tickers), 'token': api_key})
+                    if iex_res.status_code == 200:
+                        for item in iex_res.json():
+                            # 'last' is the real-time execution price on the IEX exchange
+                            price = item.get('last', 0)
+                            if price > 0:
+                                live_prices[item['ticker'].upper()] = price * usd_to_eur
+                except Exception as e:
+                    st.error(f"Tiingo IEX live feed failed: {e}")
+
+            # 4. Fallback for EU tickers (Frankfurt/Xetra etc.)
+            if eu_tickers:
+                import yfinance as yf
+                for t in eu_tickers:
+                    try:
+                        # Fast_info is significantly faster and less prone to blocking than full history
+                        live_prices[t] = yf.Ticker(t).fast_info['last_price']
+                    except: pass 
+
+            # 5. Apply Prices to DataFrame
             live_df = df_port.copy()
-            live_df['Live Price (€)'] = live_df['ticker'].map(live_prices)
+            
+            def map_live_price(row):
+                t = row['ticker']
+                if t in live_prices and live_prices[t] > 0:
+                    return live_prices[t]
+                return row['cost'] # Ultimate fallback if a stock is completely halted
+
+            live_df['Live Price (€)'] = live_df.apply(map_live_price, axis=1)
             live_df['Current Value (€)'] = live_df['Live Price (€)'] * live_df['quantity']
             
             is_stock = live_df['ticker'] != 'EUR'
