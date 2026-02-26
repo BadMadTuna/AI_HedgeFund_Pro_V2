@@ -101,10 +101,12 @@ with tab_port:
                     iex_res = requests.get(iex_url, params={'tickers': ",".join(us_tickers), 'token': api_key})
                     if iex_res.status_code == 200:
                         for item in iex_res.json():
-                            # 'last' is the real-time execution price on the IEX exchange
-                            price = item.get('last', 0)
-                            if price > 0:
-                                live_prices[item['ticker'].upper()] = price * usd_to_eur
+                            # Fallback chain: If 'last' is None, try 'tngoLast', then 'prevClose'
+                            price = item.get('last') or item.get('tngoLast') or item.get('prevClose')
+                            
+                            # Safely check that we actually got a number before doing math
+                            if price is not None and float(price) > 0:
+                                live_prices[item['ticker'].upper()] = float(price) * usd_to_eur
                 except Exception as e:
                     st.error(f"Tiingo IEX live feed failed: {e}")
 
