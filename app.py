@@ -4,8 +4,10 @@ import concurrent.futures
 import requests
 import time
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
+import numpy as np
+import yfinance as yf
 from src.data_client import MarketDataClient
 from src.database import get_portfolio_df, get_journal_df
 from src.ai_agent import AIAgent
@@ -44,8 +46,8 @@ st.title("🦅 AI Hedge Fund Manager (Pro V2)")
 st.markdown("Powered by Tiingo, Gemini 2.5 Pro, and SQLite.")
 
 # --- TABS ---
-tab_port, tab_radar, tab_analyze, tab_journal = st.tabs([
-    "📂 Portfolio", "🎯 Radar Scan", "🔍 Deep Analyzer", "📓 Trade Journal"
+tab_port, tab_radar, tab_analyze, tab_journal, tab_backtest = st.tabs([
+    "📂 Portfolio", "🎯 Radar Scan", "🔍 Deep Analyzer", "📓 Trade Journal", "📈 Backtester"
 ])
 
 # ==========================================
@@ -107,6 +109,38 @@ with tab_port:
             live_df.loc[is_stock, 'PnL (€)'] = (live_df['Live Price (€)'] - live_df['cost']) * live_df['quantity']
             live_df.loc[is_stock, 'PnL (%)'] = ((live_df['Live Price (€)'] - live_df['cost']) / live_df['cost']) * 100
             
+            # --- UPGRADED: SMART TREND & SOFT STOP TRACKER ---
+            live_df['Hard Stop (€)'] = 0.0
+            live_df.loc[is_stock, 'Hard Stop (€)'] = live_df['cost'] * 0.92  # The -8% threshold
+            live_df['Trend Status'] = 'OK'
+            
+            with st.spinner("Checking technical trendlines for your holdings..."):
+                for idx, row in live_df[is_stock].iterrows():
+                    try:
+                        t = row['ticker']
+                        hist = yf.Ticker(t).history(period="1mo")
+                        if len(hist) >= 20:
+                            sma_20 = hist['Close'].tail(20).mean()
+                            current_close = hist['Close'].iloc[-1]
+                            if current_close < sma_20:
+                                live_df.at[idx, 'Trend Status'] = 'BROKEN'
+                    except Exception:
+                        pass 
+            
+            def check_eod_status(row):
+                if row['ticker'] == 'EUR': return '-'
+                if row['Live Price (€)'] <= row['Hard Stop (€)']: 
+                    return '🚨 SELL (-8% Breach)'
+                elif row['Trend Status'] == 'BROKEN':
+                    return '🚨 SELL (Trend Broken)'
+                elif row['PnL (%)'] >= 20.0: 
+                    return '🔥 TRIM (+20% Target)'
+                else: 
+                    return '✅ SAFE'
+                
+            live_df['EOD Status'] = live_df.apply(check_eod_status, axis=1)
+            # -------------------------------------------------
+            
             st.session_state.live_port_df = live_df
             st.session_state.current_fx_rate = usd_to_eur
 
@@ -132,10 +166,16 @@ with tab_port:
                 elif val < 0: return 'color: #ef4444;' 
             return ''
             
+        def color_status(val):
+            if 'SELL' in str(val): return 'background-color: #ef4444; color: white; font-weight: bold;'
+            if 'TRIM' in str(val): return 'background-color: #f59e0b; color: white; font-weight: bold;'
+            return ''
+            
         styled_df = live_df.style.format({
             'cost': '€{:.2f}', 'Live Price (€)': '€{:.2f}', 'Current Value (€)': '€{:.2f}', 
-            'PnL (€)': '€{:.2f}', 'PnL (%)': '{:.2f}%'
-        }).map(color_pnl, subset=['PnL (€)', 'PnL (%)'])
+            'PnL (€)': '€{:.2f}', 'PnL (%)': '{:.2f}%', 'Hard Stop (€)': '€{:.2f}'
+        }).map(color_pnl, subset=['PnL (€)', 'PnL (%)']).map(color_status, subset=['EOD Status'])
+        
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
     else:
         summary = pm.get_equity_summary()
@@ -180,7 +220,6 @@ with tab_port:
                                 price = float(parts[2])
                                 date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 
-                                # Proper UPSERT logic to average cost basis
                                 cursor.execute("SELECT id, quantity, cost FROM portfolio WHERE ticker = ? AND status = 'OPEN'", (ticker,))
                                 row = cursor.fetchone()
                                 if row:
@@ -220,34 +259,24 @@ with tab_port:
         else:
             if st.button("Generate Correlation Heatmap"):
                 with st.spinner("Fetching institutional data via Tiingo..."):
-                    import numpy as np
-                    from datetime import datetime, timedelta
-                    import requests
-                    
                     try:
                         clean_tickers = [str(t).strip().upper() for t in active_tickers if pd.notna(t) and str(t).strip() != '']
-                        
                         if len(clean_tickers) < 2:
                             st.warning("Not enough valid tickers to run correlation.")
                         else:
                             price_dict = {}
                             start_str = (datetime.today() - timedelta(days=180)).strftime('%Y-%m-%d')
-                            
-                            # Grab your existing Tiingo API key
                             api_key = getattr(data_client, 'api_key', None) 
                             if not api_key: api_key = os.getenv("TIINGO_API_KEY")
                             
                             for t in clean_tickers:
                                 try:
                                     if "." in t: 
-                                        # EU Stock Fallback -> YFinance
-                                        import yfinance as yf
                                         hist = yf.Ticker(t).history(period="6m")
                                         if not hist.empty and 'Close' in hist.columns:
-                                            hist.index = hist.index.tz_localize(None) # Strip timezone
+                                            hist.index = hist.index.tz_localize(None) 
                                             price_dict[t] = hist['Close']
                                     else: 
-                                        # US Stock -> Tiingo API (Immune to cloud IP blocking)
                                         url = f"https://api.tiingo.com/tiingo/daily/{t}/prices"
                                         params = {'startDate': start_str, 'token': api_key}
                                         res = requests.get(url, params=params)
@@ -259,22 +288,18 @@ with tab_port:
                                                 df_t.set_index('date', inplace=True)
                                                 price_dict[t] = df_t['close']
                                 except Exception:
-                                    pass # Silently skip if a ticker fails
+                                    pass 
                                     
                             if len(price_dict) < 2:
                                 st.error("Could not fetch enough data. Check your Tiingo API key or limit.")
                             else:
-                                # Combine into one clean table
                                 close_df = pd.DataFrame(price_dict)
                                 close_df = close_df.apply(pd.to_numeric, errors='coerce')
                                 close_df = close_df.dropna(axis=1, how='all')
-                                close_df = close_df.ffill() # Forward-fill missing days
+                                close_df = close_df.ffill() 
                                 
-                                # Calculate daily returns and Pearson correlation
                                 returns = close_df.pct_change()
                                 corr_matrix = returns.corr(method='pearson')
-                                
-                                # Clean up the matrix
                                 corr_matrix = corr_matrix.fillna(0)
                                 if not corr_matrix.empty:
                                     np.fill_diagonal(corr_matrix.values, 1.0) 
@@ -285,7 +310,6 @@ with tab_port:
                                 styled_corr = corr_matrix.style.background_gradient(cmap='RdYlGn_r', vmin=-0.5, vmax=1.0).format("{:.2f}")
                                 st.dataframe(styled_corr, use_container_width=True)
                                 
-                                # Automated Concentration Risk Warning
                                 high_corr_pairs = []
                                 cols = corr_matrix.columns
                                 for i in range(len(cols)):
@@ -304,7 +328,7 @@ with tab_port:
                     except Exception as e:
                         st.error(f"Failed to generate correlation matrix. ({e})")
                         
-    st.markdown("---") # Visual separator before the Guardian
+    st.markdown("---")
 
     if st.button("🛡️ Run AI Guardian Audit on Portfolio"):
         audit_df = st.session_state.live_port_df if st.session_state.live_port_df is not None else df_port
@@ -325,6 +349,7 @@ with tab_port:
                     })
                 st.session_state.guardian_audit_df = pd.DataFrame(audit_results)
 
+    # Note: Placed outside the button so it survives downloads
     if st.session_state.guardian_audit_df is not None:
         st.success("Audit Complete!")
         for _, row in st.session_state.guardian_audit_df.iterrows():
@@ -355,6 +380,11 @@ with tab_port:
 with tab_radar:
     st.header("🎯 Two-Tier AI Radar Scan")
     
+    # Initialize session state variables so data survives the download button
+    if "scan_df_final" not in st.session_state:
+        st.session_state.scan_df_final = None
+        st.session_state.scan_top_20_alpha = None
+    
     with st.expander("🌍 Market Regime Check", expanded=True):
         with st.spinner("Checking market trend..."):
             regime = data_client.get_regime('SPY')
@@ -371,7 +401,6 @@ with tab_radar:
 
     tickers_to_scan = get_sp500_tickers()
 
-    # The Scan Button
     if st.button("🚀 Launch Quantamental Alpha Scan", type="primary"):
         st.subheader("⚙️ Tier 1: Momentum Filter (Broad Scan)")
         quant_results = []
@@ -402,8 +431,6 @@ with tab_radar:
         
         if quant_results:
             df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
-            
-            # Keep only the Top 50 Momentum stocks to save time on Fundamental lookups
             top_50_df = df_quant.head(50)
             
             st.subheader("🔬 Tier 2: Fundamental Alpha Score (Quality + Value)")
@@ -416,14 +443,10 @@ with tab_radar:
                 t = row['Ticker']
                 funds = data_client.get_fundamentals(t)
                 
-                # --- THE ALPHA MATH ---
-                # Momentum (10-50 pts): Smoothness is usually 1-5
                 smooth_pts = row['Smooth_Score'] * 10 
-                # Quality (0-35 pts): ROE and Gross Margins
                 quality_pts = (funds['ROE'] * 50) + (funds['Gross_Margin'] * 20)
-                # Value (0-35 pts): Free Cash Flow Yield and low EV/EBITDA
                 ev = funds['EV_EBITDA']
-                ev_pts = max(0, 30 - ev) if ev > 0 else 0 # Lower EV/EBITDA is better
+                ev_pts = max(0, 30 - ev) if ev > 0 else 0 
                 value_pts = (funds['FCF_Yield'] * 200) + ev_pts
                 
                 alpha_score = smooth_pts + quality_pts + value_pts
@@ -443,24 +466,19 @@ with tab_radar:
                     if res: fund_results.append(res)
                     fund_pb.progress((i + 1) / len(top_50_df))
             
-            # Sort by the new Master Alpha Score
             df_alpha = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False)
             top_20_alpha = df_alpha.head(20)
             
-            # Display the Fundamental breakdown
-            st.dataframe(top_20_alpha[['Ticker', 'Sector', 'Smooth_Score', 'ROE', 'Margin', 'EV/EBITDA', 'Alpha_Score']], use_container_width=True)
-
             # --- TIER 3: AI HUNTER ---
             st.subheader("🧠 Tier 3: AI Deep Dive (Top 20 Quantamental)")
             final_results = []
             ai_progress = st.progress(0)
 
             for i, t in enumerate(top_20_alpha['Ticker']):
-                tech_fund_data = top_20_alpha.iloc[i].to_dict() # The AI now automatically sees ROE, Margins, and EV/EBITDA!
+                tech_fund_data = top_20_alpha.iloc[i].to_dict() 
                 news = data_client.get_news(t)
                 earn = data_client.get_earnings_date(t)
                 
-                # Pass the combined data to the Hunter
                 ai_res = agent.get_hunter_verdict(t, tech_fund_data, news, earn)
                 
                 final_results.append({
@@ -474,50 +492,62 @@ with tab_radar:
 
             df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
             
-            def highlight_verdict(val):
-                if val == 'BUY': return 'background-color: #064e3b; color: white;' 
-                elif val == 'WATCH': return 'background-color: #78350f; color: white;' 
-                elif val == 'AVOID': return 'background-color: #7f1d1d; color: white;' 
-                return ''
-                
-            st.dataframe(df_final.style.map(highlight_verdict, subset=['Verdict']), use_container_width=True, hide_index=True)
+            # Save results to session state so they persist!
+            st.session_state.scan_df_final = df_final
+            st.session_state.scan_top_20_alpha = top_20_alpha
 
-            st.divider()
-            st.subheader("📝 Detailed AI Reasoning & Trade Sizing")
+    # --- Render Scan UI out here so it survives the download button refresh ---
+    if st.session_state.scan_df_final is not None:
+        df_final = st.session_state.scan_df_final
+        top_20_alpha = st.session_state.scan_top_20_alpha
+        
+        st.subheader("🔬 Tier 2: Fundamental Alpha Score (Quality + Value)")
+        st.dataframe(top_20_alpha[['Ticker', 'Sector', 'Smooth_Score', 'ROE', 'Margin', 'EV/EBITDA', 'Alpha_Score']], use_container_width=True)
+
+        st.subheader("🧠 Tier 3: AI Deep Dive (Top 20 Quantamental)")
+        def highlight_verdict(val):
+            if val == 'BUY': return 'background-color: #064e3b; color: white;' 
+            elif val == 'WATCH': return 'background-color: #78350f; color: white;' 
+            elif val == 'AVOID': return 'background-color: #7f1d1d; color: white;' 
+            return ''
             
-            # Fetch equity for sizing math
-            equity_summary = pm.get_equity_summary()
-            ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
-            fx_rate = st.session_state.get('current_fx_rate', 0.92)
+        st.dataframe(df_final.style.map(highlight_verdict, subset=['Verdict']), use_container_width=True, hide_index=True)
 
-            for _, row in df_final.iterrows():
-                if row['Verdict'] in ['BUY', 'WATCH']: 
-                    with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
-                        st.write(f"**Sector:** {row['Sector']} | **Quantamental Alpha Score:** {row['Alpha Score']}")
+        st.divider()
+        st.subheader("📝 Detailed AI Reasoning & Trade Sizing")
+        
+        equity_summary = pm.get_equity_summary()
+        ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
+        fx_rate = st.session_state.get('current_fx_rate', 0.92)
+
+        for _, row in df_final.iterrows():
+            if row['Verdict'] in ['BUY', 'WATCH']: 
+                with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
+                    st.write(f"**Sector:** {row['Sector']} | **Quantamental Alpha Score:** {row['Alpha Score']}")
+                    
+                    if row['Verdict'] == 'BUY':
+                        is_eu = "." in row['Ticker']
+                        math_equity = ACCOUNT_SIZE if is_eu else (ACCOUNT_SIZE / fx_rate)
+                        sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=math_equity, risk_pct=0.01)
                         
-                        if row['Verdict'] == 'BUY':
-                            is_eu = "." in row['Ticker']
-                            math_equity = ACCOUNT_SIZE if is_eu else (ACCOUNT_SIZE / fx_rate)
-                            sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=math_equity, risk_pct=0.01)
+                        if sizing:
+                            price_eur = sizing['Current_Price'] if is_eu else (sizing['Current_Price'] * fx_rate)
+                            invest_eur = sizing['Total_Investment'] if is_eu else (sizing['Total_Investment'] * fx_rate)
+                            stop_eur = sizing['Stop_Loss'] if is_eu else (sizing['Stop_Loss'] * fx_rate)
+                            risk_eur = sizing['Max_Loss_Risk'] if is_eu else (sizing['Max_Loss_Risk'] * fx_rate)
                             
-                            if sizing:
-                                price_eur = sizing['Current_Price'] if is_eu else (sizing['Current_Price'] * fx_rate)
-                                invest_eur = sizing['Total_Investment'] if is_eu else (sizing['Total_Investment'] * fx_rate)
-                                stop_eur = sizing['Stop_Loss'] if is_eu else (sizing['Stop_Loss'] * fx_rate)
-                                risk_eur = sizing['Max_Loss_Risk'] if is_eu else (sizing['Max_Loss_Risk'] * fx_rate)
-                                
-                                st.success(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Total Equity):**\n"
-                                           f"- Buy **{sizing['Shares']} shares** at approx **€{price_eur:,.2f}**\n"
-                                           f"- Total Capital Deployed: **€{invest_eur:,.2f}**\n"
-                                           f"- Hard Stop Loss: **€{stop_eur:,.2f}** (2x ATR)\n"
-                                           f"- Max Risk if stopped out: **€{risk_eur:,.2f}**")
-                        st.markdown(row['Reasoning'])
-            
-            st.divider()
-            st.download_button("📥 Download Complete Quantamental Report (CSV)", 
-                               df_final.to_csv(index=False).encode('utf-8'), 
-                               f"quantamental_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
-                               "text/csv")
+                            st.success(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Total Equity):**\n"
+                                       f"- Buy **{sizing['Shares']} shares** at approx **€{price_eur:,.2f}**\n"
+                                       f"- Total Capital Deployed: **€{invest_eur:,.2f}**\n"
+                                       f"- Hard Stop Loss: **€{stop_eur:,.2f}** (2x ATR)\n"
+                                       f"- Max Risk if stopped out: **€{risk_eur:,.2f}**")
+                    st.markdown(row['Reasoning'])
+        
+        st.divider()
+        st.download_button("📥 Download Complete Quantamental Report (CSV)", 
+                           df_final.to_csv(index=False).encode('utf-8'), 
+                           f"quantamental_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
+                           "text/csv")
 
 # ==========================================
 # TAB 3 & 4
@@ -564,3 +594,85 @@ with tab_journal:
         st.dataframe(df_journal, use_container_width=True, hide_index=True)
     else:
         st.info("Journal is empty. Execute some trades to build history.")
+
+# ==========================================
+# TAB 5: BACKTESTER
+# ==========================================
+with tab_backtest:
+    st.header("📈 Historical Regime Backtester")
+    st.write("Test the exact mathematical edge of your **Risk-On / Risk-Off** moving average rule against pure Buy & Hold.")
+    
+    col1, col2, col3 = st.columns(3)
+    bt_ticker = col1.text_input("Asset Ticker", "SPY").upper()
+    bt_sma = col2.number_input("Regime Filter (SMA)", min_value=10, max_value=300, value=200, step=10)
+    bt_years = col3.number_input("Years of History", min_value=1, max_value=10, value=5, step=1)
+    
+    if st.button("Run Institutional Backtest", type="primary"):
+        with st.spinner(f"Simulating {bt_years} years of trading history for {bt_ticker}..."):
+            try:
+                api_key = getattr(data_client, 'api_key', None) 
+                if not api_key: api_key = os.getenv("TIINGO_API_KEY")
+                
+                start_date = (datetime.today() - timedelta(days=bt_years * 365)).strftime('%Y-%m-%d')
+                url = f"https://api.tiingo.com/tiingo/daily/{bt_ticker}/prices"
+                params = {'startDate': start_date, 'token': api_key}
+                
+                res = requests.get(url, params=params)
+                if res.status_code != 200 or len(res.json()) == 0:
+                    st.error(f"Failed to fetch data for {bt_ticker}. Check ticker or API limits.")
+                else:
+                    df_bt = pd.DataFrame(res.json())
+                    df_bt['date'] = pd.to_datetime(df_bt['date']).dt.tz_localize(None)
+                    df_bt.set_index('date', inplace=True)
+                    df_bt.sort_index(inplace=True)
+                    
+                    close_prices = df_bt['close']
+                    
+                    df_bt['Daily_Return'] = close_prices.pct_change()
+                    df_bt['SMA'] = close_prices.rolling(window=bt_sma).mean()
+                    
+                    df_bt['Signal'] = np.where(close_prices > df_bt['SMA'], 1, 0)
+                    df_bt['Strategy_Return'] = df_bt['Signal'].shift(1) * df_bt['Daily_Return']
+                    
+                    df_bt.dropna(inplace=True)
+                    
+                    df_bt['Cumulative_Buy_Hold'] = (1 + df_bt['Daily_Return']).cumprod()
+                    df_bt['Cumulative_Strategy'] = (1 + df_bt['Strategy_Return']).cumprod()
+                    
+                    annual_trading_days = 252
+                    
+                    bh_cagr = (df_bt['Cumulative_Buy_Hold'].iloc[-1] ** (1 / bt_years)) - 1
+                    bh_vol = df_bt['Daily_Return'].std() * np.sqrt(annual_trading_days)
+                    bh_sharpe = bh_cagr / bh_vol if bh_vol != 0 else 0
+                    bh_drawdown = (df_bt['Cumulative_Buy_Hold'] / df_bt['Cumulative_Buy_Hold'].cummax() - 1).min()
+                    
+                    strat_cagr = (df_bt['Cumulative_Strategy'].iloc[-1] ** (1 / bt_years)) - 1
+                    strat_vol = df_bt['Strategy_Return'].std() * np.sqrt(annual_trading_days)
+                    strat_sharpe = strat_cagr / strat_vol if strat_vol != 0 else 0
+                    strat_drawdown = (df_bt['Cumulative_Strategy'] / df_bt['Cumulative_Strategy'].cummax() - 1).min()
+                    
+                    st.divider()
+                    c1, c2 = st.columns(2)
+                    
+                    with c1:
+                        st.markdown("### 📉 Pure Buy & Hold")
+                        st.metric("Total CAGR", f"{bh_cagr:.2%}")
+                        st.metric("Max Drawdown", f"{bh_drawdown:.2%}", delta_color="inverse")
+                        st.metric("Sharpe Ratio (Risk-Adjusted)", f"{bh_sharpe:.2f}")
+                        
+                    with c2:
+                        st.markdown("### 🛡️ Trend Regime Strategy")
+                        st.metric("Total CAGR", f"{strat_cagr:.2%}", delta=f"{(strat_cagr - bh_cagr):.2%} vs B&H")
+                        st.metric("Max Drawdown", f"{strat_drawdown:.2%}", delta=f"{(strat_drawdown - bh_drawdown):.2%} vs B&H", delta_color="inverse")
+                        st.metric("Sharpe Ratio (Risk-Adjusted)", f"{strat_sharpe:.2f}", delta=f"{(strat_sharpe - bh_sharpe):.2f}")
+
+                    st.markdown("---")
+                    st.subheader("💰 Equity Curve Comparison")
+                    chart_data = df_bt[['Cumulative_Buy_Hold', 'Cumulative_Strategy']].copy()
+                    chart_data.columns = ['Buy & Hold', 'Trend Strategy']
+                    st.line_chart(chart_data, color=["#ef4444", "#10b981"])
+                    
+                    st.caption("Notice how the green line (Strategy) flattens out during major market crashes because the system mathematically rotated to cash, preserving your capital.")
+
+            except Exception as e:
+                st.error(f"Backtest engine failed: {e}")
