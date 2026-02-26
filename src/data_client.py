@@ -196,6 +196,34 @@ class MarketDataClient:
             return "\n".join(headlines)
         except Exception:
             return "Error fetching news."
+        
+    def get_fundamentals(self, ticker: str) -> dict:
+        """Fetches Quality and Value metrics to build a Multi-Factor Alpha Score."""
+        import yfinance as yf
+        try:
+            # yfinance info dictionary contains fundamental corporate data
+            info = yf.Ticker(ticker).info
+            
+            # Quality Metrics (Profitability)
+            roe = info.get('returnOnEquity', 0)
+            gross_margin = info.get('grossMargins', 0)
+            
+            # Value Metrics (Price)
+            ev_ebitda = info.get('enterpriseToEbitda', 0)
+            fcf = info.get('freeCashflow', 0)
+            market_cap = info.get('marketCap', 1)
+            
+            fcf_yield = fcf / market_cap if market_cap and fcf else 0
+            
+            return {
+                'ROE': roe if roe else 0,
+                'Gross_Margin': gross_margin if gross_margin else 0,
+                'EV_EBITDA': ev_ebitda if ev_ebitda else 0,
+                'FCF_Yield': fcf_yield if fcf_yield else 0
+            }
+        except Exception:
+            # If the data is missing, return 0s so it doesn't break the math
+            return {'ROE': 0, 'Gross_Margin': 0, 'EV_EBITDA': 0, 'FCF_Yield': 0}
 
     def get_earnings_date(self, ticker: str) -> str:
         """Fallback to yfinance to grab the upcoming earnings date."""

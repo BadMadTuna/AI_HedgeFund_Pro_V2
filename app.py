@@ -273,9 +273,9 @@ with tab_radar:
 
     tickers_to_scan = get_sp500_tickers()
 
-    # The Scan Button is now ALWAYS active, no checkbox override required
-    if st.button("🚀 Launch Two-Tier Scan", type="primary"):
-        st.subheader("⚙️ Phase 1: Quantitative Filter")
+    # The Scan Button
+    if st.button("🚀 Launch Quantamental Alpha Scan", type="primary"):
+        st.subheader("⚙️ Tier 1: Momentum Filter (Broad Scan)")
         quant_results = []
         progress_bar = st.progress(0)
         
@@ -304,26 +304,74 @@ with tab_radar:
         
         if quant_results:
             df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
-            top_20_df = df_quant.head(20)
-            st.dataframe(top_20_df, use_container_width=True)
+            
+            # Keep only the Top 50 Momentum stocks to save time on Fundamental lookups
+            top_50_df = df_quant.head(50)
+            
+            st.subheader("🔬 Tier 2: Fundamental Alpha Score (Quality + Value)")
+            st.write("Fetching corporate fundamentals for the Top 50 momentum leaders...")
+            
+            fund_results = []
+            fund_pb = st.progress(0)
+            
+            def fetch_fund(row):
+                t = row['Ticker']
+                funds = data_client.get_fundamentals(t)
+                
+                # --- THE ALPHA MATH ---
+                # Momentum (10-50 pts): Smoothness is usually 1-5
+                smooth_pts = row['Smooth_Score'] * 10 
+                # Quality (0-35 pts): ROE and Gross Margins
+                quality_pts = (funds['ROE'] * 50) + (funds['Gross_Margin'] * 20)
+                # Value (0-35 pts): Free Cash Flow Yield and low EV/EBITDA
+                ev = funds['EV_EBITDA']
+                ev_pts = max(0, 30 - ev) if ev > 0 else 0 # Lower EV/EBITDA is better
+                value_pts = (funds['FCF_Yield'] * 200) + ev_pts
+                
+                alpha_score = smooth_pts + quality_pts + value_pts
+                
+                return {
+                    **row,
+                    'ROE': f"{funds['ROE']:.1%}",
+                    'Margin': f"{funds['Gross_Margin']:.1%}",
+                    'EV/EBITDA': round(funds['EV_EBITDA'], 1),
+                    'Alpha_Score': round(alpha_score, 1)
+                }
 
-            st.subheader("🧠 Phase 2: AI Deep Dive (Top 20)")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures2 = {executor.submit(fetch_fund, row.to_dict()): row for _, row in top_50_df.iterrows()}
+                for i, future in enumerate(concurrent.futures.as_completed(futures2)):
+                    res = future.result()
+                    if res: fund_results.append(res)
+                    fund_pb.progress((i + 1) / len(top_50_df))
+            
+            # Sort by the new Master Alpha Score
+            df_alpha = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False)
+            top_20_alpha = df_alpha.head(20)
+            
+            # Display the Fundamental breakdown
+            st.dataframe(top_20_alpha[['Ticker', 'Sector', 'Smooth_Score', 'ROE', 'Margin', 'EV/EBITDA', 'Alpha_Score']], use_container_width=True)
+
+            # --- TIER 3: AI HUNTER ---
+            st.subheader("🧠 Tier 3: AI Deep Dive (Top 20 Quantamental)")
             final_results = []
             ai_progress = st.progress(0)
 
-            for i, t in enumerate(top_20_df['Ticker']):
-                tech_data = top_20_df.iloc[i].to_dict()
+            for i, t in enumerate(top_20_alpha['Ticker']):
+                tech_fund_data = top_20_alpha.iloc[i].to_dict() # The AI now automatically sees ROE, Margins, and EV/EBITDA!
                 news = data_client.get_news(t)
                 earn = data_client.get_earnings_date(t)
-                ai_res = agent.get_hunter_verdict(t, tech_data, news, earn)
+                
+                # Pass the combined data to the Hunter
+                ai_res = agent.get_hunter_verdict(t, tech_fund_data, news, earn)
                 
                 final_results.append({
-                    "Ticker": t, "Price": tech_data['Price'], "Sector": tech_data['Sector'], 
-                    "Sector Health": tech_data['Sector Health'], "Smooth Score": tech_data['Smooth_Score'],
+                    "Ticker": t, "Price": tech_fund_data['Price'], "Sector": tech_fund_data['Sector'], 
+                    "Alpha Score": tech_fund_data['Alpha_Score'], "Quality": f"ROE: {tech_fund_data['ROE']}",
                     "AI Score": ai_res.get('score', 0), "Verdict": ai_res.get('verdict', 'ERROR'),
                     "Earnings": earn, "Reasoning": ai_res.get('reasoning', '')
                 })
-                ai_progress.progress((i + 1) / len(top_20_df))
+                ai_progress.progress((i + 1) / len(top_20_alpha))
                 time.sleep(1) 
 
             df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
@@ -342,26 +390,35 @@ with tab_radar:
             # Fetch equity for sizing math
             equity_summary = pm.get_equity_summary()
             ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
+            fx_rate = st.session_state.get('current_fx_rate', 0.92)
 
             for _, row in df_final.iterrows():
                 if row['Verdict'] in ['BUY', 'WATCH']: 
                     with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
-                        st.write(f"**Sector:** {row['Sector']} ({row['Sector Health']}) | **Smooth Score:** {row['Smooth Score']}")
+                        st.write(f"**Sector:** {row['Sector']} | **Quantamental Alpha Score:** {row['Alpha Score']}")
                         
                         if row['Verdict'] == 'BUY':
-                            sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=ACCOUNT_SIZE, risk_pct=0.01)
+                            is_eu = "." in row['Ticker']
+                            math_equity = ACCOUNT_SIZE if is_eu else (ACCOUNT_SIZE / fx_rate)
+                            sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=math_equity, risk_pct=0.01)
+                            
                             if sizing:
-                                st.success(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Equity):**\n"
-                                           f"- Buy **{sizing['Shares']} shares** at approx **${sizing['Current_Price']}**\n"
-                                           f"- Total Capital Deployed: **${sizing['Total_Investment']:,}**\n"
-                                           f"- Hard Stop Loss: **${sizing['Stop_Loss']}** (2x ATR)\n"
-                                           f"- Max Risk if stopped out: **${sizing['Max_Loss_Risk']}**")
+                                price_eur = sizing['Current_Price'] if is_eu else (sizing['Current_Price'] * fx_rate)
+                                invest_eur = sizing['Total_Investment'] if is_eu else (sizing['Total_Investment'] * fx_rate)
+                                stop_eur = sizing['Stop_Loss'] if is_eu else (sizing['Stop_Loss'] * fx_rate)
+                                risk_eur = sizing['Max_Loss_Risk'] if is_eu else (sizing['Max_Loss_Risk'] * fx_rate)
+                                
+                                st.success(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Total Equity):**\n"
+                                           f"- Buy **{sizing['Shares']} shares** at approx **€{price_eur:,.2f}**\n"
+                                           f"- Total Capital Deployed: **€{invest_eur:,.2f}**\n"
+                                           f"- Hard Stop Loss: **€{stop_eur:,.2f}** (2x ATR)\n"
+                                           f"- Max Risk if stopped out: **€{risk_eur:,.2f}**")
                         st.markdown(row['Reasoning'])
             
             st.divider()
-            st.download_button("📥 Download Complete AI Scan Report (CSV)", 
+            st.download_button("📥 Download Complete Quantamental Report (CSV)", 
                                df_final.to_csv(index=False).encode('utf-8'), 
-                               f"ai_radar_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
+                               f"quantamental_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
                                "text/csv")
 
 # ==========================================
