@@ -229,9 +229,14 @@ with tab_port:
                         if isinstance(data.columns, pd.MultiIndex):
                             data.columns = data.columns.droplevel(1)
                             
-                        # Calculate daily returns and Pearson correlation
-                        returns = data.pct_change().dropna()
-                        corr_matrix = returns.corr()
+                        # Calculate daily returns (Do NOT use global .dropna() here!)
+                        returns = data.pct_change()
+                        
+                        # Pandas .corr() automatically handles missing days pairwise 
+                        corr_matrix = returns.corr(method='pearson')
+                        
+                        # Fill any remaining NaNs with 0 just in case a stock has 0 trading history
+                        corr_matrix = corr_matrix.fillna(0)
                         
                         st.write("**Pearson Correlation Coefficient (Last 6 Months):**")
                         st.caption("🔴 :red[**Red**] = Danger/High Correlation (Moves Together) | 🟢 :green[**Green**] = Safe/Low Correlation (Moves Independently)")
