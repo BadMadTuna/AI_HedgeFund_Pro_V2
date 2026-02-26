@@ -219,64 +219,69 @@ with tab_port:
             st.info("You need at least 2 active stock positions to calculate correlation.")
         else:
             if st.button("Generate Correlation Heatmap"):
-                with st.spinner("Downloading 6-month historical returns for your portfolio..."):
+                with st.spinner("Downloading historical returns, bypassing broken tickers..."):
                     import yfinance as yf
                     import numpy as np
                     try:
-                        # 1. Clean tickers to prevent yfinance query errors
-                        clean_tickers = [t.strip().upper() for t in active_tickers]
+                        # 1. Clean tickers & DESTROY empty/blank entries
+                        clean_tickers = [str(t).strip().upper() for t in active_tickers if pd.notna(t) and str(t).strip() != '']
                         
-                        # 2. Fetch 6 months of daily data
-                        data = yf.download(clean_tickers, period="6m", progress=False)
-                        
-                        # 3. Bulletproof extraction of Close prices
-                        if isinstance(data.columns, pd.MultiIndex):
-                            if 'Close' in data.columns.get_level_values(0):
-                                close_df = data['Close']
-                            elif 'Close' in data.columns.get_level_values(1):
-                                close_df = data.xs('Close', level=1, axis=1)
-                            else:
-                                close_df = pd.DataFrame()
+                        if len(clean_tickers) < 2:
+                            st.warning("Not enough valid tickers to run correlation.")
                         else:
-                            close_df = data
-                            
-                        # 4. Force numeric types, drop empty columns, and fill gaps
-                        close_df = close_df.apply(pd.to_numeric, errors='coerce')
-                        close_df = close_df.dropna(axis=1, how='all')
-                        close_df = close_df.ffill() # Forward-fill missing/halted days
-                        
-                        # 5. Calculate daily returns and Pearson correlation
-                        returns = close_df.pct_change()
-                        corr_matrix = returns.corr(method='pearson')
-                        
-                        # 6. Clean up the matrix
-                        corr_matrix = corr_matrix.fillna(0)
-                        if not corr_matrix.empty:
-                            np.fill_diagonal(corr_matrix.values, 1.0) # Diagonal is always 1.0
-                        
-                        st.write("**Pearson Correlation Coefficient (Last 6 Months):**")
-                        st.caption("🔴 :red[**Red**] = Danger/High Correlation (Moves Together) | 🟢 :green[**Green**] = Safe/Low Correlation (Moves Independently)")
-                        
-                        # Format the table as a Red/Green Heatmap
-                        styled_corr = corr_matrix.style.background_gradient(cmap='RdYlGn_r', vmin=-0.5, vmax=1.0).format("{:.2f}")
-                        st.dataframe(styled_corr, use_container_width=True)
-                        
-                        # Automated Concentration Risk Warning
-                        high_corr_pairs = []
-                        cols = corr_matrix.columns
-                        for i in range(len(cols)):
-                            for j in range(i+1, len(cols)):
-                                val = corr_matrix.iloc[i, j]
-                                if val > 0.70 and val < 0.99: # >0.70 is the danger threshold
-                                    high_corr_pairs.append(f"**{cols[i]}** & **{cols[j]}** ({val:.2f})")
+                            # 2. BULLETPROOF EXTRACTION (Fetch 1-by-1 to avoid all yfinance format bugs)
+                            price_dict = {}
+                            for t in clean_tickers:
+                                try:
+                                    hist = yf.Ticker(t).history(period="6m")
+                                    if not hist.empty and 'Close' in hist.columns:
+                                        price_dict[t] = hist['Close']
+                                except Exception:
+                                    pass # Silently skip any ticker that doesn't exist
                                     
-                        if high_corr_pairs:
-                            st.error(f"**⚠️ Concentration Risk Detected:** The following pairs are highly correlated (>0.70). If one drops, the other is highly likely to crash with it. Consider rotating one out:")
-                            for pair in high_corr_pairs:
-                                st.write(f"- {pair}")
-                        else:
-                            st.success("**✅ Healthy Diversification:** No dangerously correlated pairs detected. Your portfolio risk is well-distributed!")
-                            
+                            if len(price_dict) < 2:
+                                st.error("Could not download enough price data. Check your internet connection.")
+                            else:
+                                # Combine all individual series into one clean table
+                                close_df = pd.DataFrame(price_dict)
+                                
+                                # 3. Force numeric types, drop empty columns, and fill gaps
+                                close_df = close_df.apply(pd.to_numeric, errors='coerce')
+                                close_df = close_df.dropna(axis=1, how='all')
+                                close_df = close_df.ffill() # Forward-fill missing/halted days
+                                
+                                # 4. Calculate daily returns and Pearson correlation
+                                returns = close_df.pct_change()
+                                corr_matrix = returns.corr(method='pearson')
+                                
+                                # 5. Clean up the matrix
+                                corr_matrix = corr_matrix.fillna(0)
+                                if not corr_matrix.empty:
+                                    np.fill_diagonal(corr_matrix.values, 1.0) # Diagonal is always 1.0
+                                
+                                st.write("**Pearson Correlation Coefficient (Last 6 Months):**")
+                                st.caption("🔴 :red[**Red**] = Danger/High Correlation (Moves Together) | 🟢 :green[**Green**] = Safe/Low Correlation (Moves Independently)")
+                                
+                                # Format the table as a Red/Green Heatmap
+                                styled_corr = corr_matrix.style.background_gradient(cmap='RdYlGn_r', vmin=-0.5, vmax=1.0).format("{:.2f}")
+                                st.dataframe(styled_corr, use_container_width=True)
+                                
+                                # Automated Concentration Risk Warning
+                                high_corr_pairs = []
+                                cols = corr_matrix.columns
+                                for i in range(len(cols)):
+                                    for j in range(i+1, len(cols)):
+                                        val = corr_matrix.iloc[i, j]
+                                        if val > 0.70 and val < 0.99: # >0.70 is the danger threshold
+                                            high_corr_pairs.append(f"**{cols[i]}** & **{cols[j]}** ({val:.2f})")
+                                            
+                                if high_corr_pairs:
+                                    st.error(f"**⚠️ Concentration Risk Detected:** The following pairs are highly correlated (>0.70). If one drops, the other is highly likely to crash with it. Consider rotating one out:")
+                                    for pair in high_corr_pairs:
+                                        st.write(f"- {pair}")
+                                else:
+                                    st.success("**✅ Healthy Diversification:** No dangerously correlated pairs detected. Your portfolio risk is well-distributed!")
+                                    
                     except Exception as e:
                         st.error(f"Failed to generate correlation matrix. Please try again. ({e})")
                         
