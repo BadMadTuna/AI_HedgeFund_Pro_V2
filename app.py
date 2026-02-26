@@ -583,27 +583,54 @@ with tab_analyze:
                 c4.metric("EV/EBITDA", tech_fund_data['EV/EBITDA'])
                 c5.metric("Earnings", earn)
                 
-                # --- NEW: 6-MONTH PRICE CHART WITH TRENDLINES ---
-                import yfinance as yf
+                # --- NEW: 6-MONTH PRICE CHART WITH TRENDLINES (TIINGO POWERED) ---
+                import requests
+                from datetime import datetime, timedelta
                 try:
-                    hist = yf.Ticker(a_ticker).history(period="6m")
-                    if not hist.empty:
-                        # Strip timezones so Streamlit plots the dates cleanly
-                        hist.index = hist.index.tz_localize(None) 
-                        
+                    api_key = getattr(data_client, 'api_key', None) 
+                    if not api_key: api_key = os.getenv("TIINGO_API_KEY")
+                    
+                    start_str = (datetime.today() - timedelta(days=180)).strftime('%Y-%m-%d')
+                    hist = pd.DataFrame()
+                    
+                    if "." in a_ticker:
+                        # EU Stock Fallback (Tiingo free tier is mostly US equities)
+                        import yfinance as yf
+                        hist_yf = yf.Ticker(a_ticker).history(period="6m")
+                        if not hist_yf.empty:
+                            if hist_yf.index.tz is not None:
+                                hist_yf.index = hist_yf.index.tz_localize(None)
+                            hist = hist_yf[['Close']].rename(columns={'Close': 'close'})
+                    else:
+                        # US Stock -> Tiingo API (Immune to IP blocking)
+                        url = f"https://api.tiingo.com/tiingo/daily/{a_ticker}/prices"
+                        res = requests.get(url, params={'startDate': start_str, 'token': api_key})
+                        if res.status_code == 200 and len(res.json()) > 0:
+                            hist = pd.DataFrame(res.json())
+                            hist['date'] = pd.to_datetime(hist['date']).dt.tz_localize(None)
+                            hist.set_index('date', inplace=True)
+                            
+                    if not hist.empty and 'close' in hist.columns:
                         # Calculate Institutional Moving Averages
-                        hist['20-Day SMA (Short Trend)'] = hist['Close'].rolling(window=20).mean()
-                        hist['50-Day SMA (Mid Trend)'] = hist['Close'].rolling(window=50).mean()
+                        hist['20-Day SMA'] = hist['close'].rolling(window=20).mean()
+                        hist['50-Day SMA'] = hist['close'].rolling(window=50).mean()
                         
                         # Format the DataFrame for the chart
-                        chart_data = hist[['Close', '20-Day SMA (Short Trend)', '50-Day SMA (Mid Trend)']].copy()
-                        chart_data.rename(columns={'Close': 'Live Price'}, inplace=True)
+                        chart_data = hist[['close', '20-Day SMA', '50-Day SMA']].copy()
+                        chart_data.rename(columns={'close': 'Price'}, inplace=True)
                         
                         st.markdown("### 📈 6-Month Price Action & Trendlines")
-                        # Plot with custom hex colors: Green/Red for price (default text color), Orange for 20SMA, Blue for 50SMA
-                        st.line_chart(chart_data, color=["#10b981", "#f59e0b", "#3b82f6"])
+                        try:
+                            # Streamlit 1.33+ supports custom line colors
+                            st.line_chart(chart_data, color=["#10b981", "#f59e0b", "#3b82f6"])
+                        except TypeError:
+                            # Fallback for older Streamlit versions
+                            st.line_chart(chart_data)
+                    else:
+                        st.warning("Could not load enough price history to draw the chart.")
+                        
                 except Exception as e:
-                    st.warning("Could not load price chart.")
+                    st.error(f"Chart failed to load: {e}")
                 # ------------------------------------------------
                 
                 st.markdown("### 📰 Recent News")
