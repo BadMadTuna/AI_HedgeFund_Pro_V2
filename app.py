@@ -562,12 +562,12 @@ with tab_analyze:
             if not tech:
                 st.error("Could not fetch data. Check ticker.")
             else:
-                # 1. Fetch Fundamentals
+                # 1. Fetch Fundamentals & Text Data
                 funds = data_client.get_fundamentals(a_ticker)
                 news = data_client.get_news(a_ticker)
                 earn = data_client.get_earnings_date(a_ticker)
                 
-                # 2. Merge Technicals + Fundamentals so the AI can read them together
+                # 2. Merge Technicals + Fundamentals
                 tech_fund_data = {
                     **tech,
                     'ROE': f"{funds.get('ROE', 0):.1%}",
@@ -583,11 +583,33 @@ with tab_analyze:
                 c4.metric("EV/EBITDA", tech_fund_data['EV/EBITDA'])
                 c5.metric("Earnings", earn)
                 
+                # --- NEW: 6-MONTH PRICE CHART WITH TRENDLINES ---
+                import yfinance as yf
+                try:
+                    hist = yf.Ticker(a_ticker).history(period="6m")
+                    if not hist.empty:
+                        # Strip timezones so Streamlit plots the dates cleanly
+                        hist.index = hist.index.tz_localize(None) 
+                        
+                        # Calculate Institutional Moving Averages
+                        hist['20-Day SMA (Short Trend)'] = hist['Close'].rolling(window=20).mean()
+                        hist['50-Day SMA (Mid Trend)'] = hist['Close'].rolling(window=50).mean()
+                        
+                        # Format the DataFrame for the chart
+                        chart_data = hist[['Close', '20-Day SMA (Short Trend)', '50-Day SMA (Mid Trend)']].copy()
+                        chart_data.rename(columns={'Close': 'Live Price'}, inplace=True)
+                        
+                        st.markdown("### 📈 6-Month Price Action & Trendlines")
+                        # Plot with custom hex colors: Green/Red for price (default text color), Orange for 20SMA, Blue for 50SMA
+                        st.line_chart(chart_data, color=["#10b981", "#f59e0b", "#3b82f6"])
+                except Exception as e:
+                    st.warning("Could not load price chart.")
+                # ------------------------------------------------
+                
                 st.markdown("### 📰 Recent News")
                 st.text(news)
                 
                 st.markdown("### 🧠 Quantamental AI Verdict")
-                # 4. Pass the MERGED dictionary to the AI Hunter
                 ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn)
                 
                 if ai_res.get('verdict') == "BUY": st.success(f"Score: {ai_res.get('score')} | Verdict: BUY")
