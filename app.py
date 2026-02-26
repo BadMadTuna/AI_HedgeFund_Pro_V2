@@ -219,50 +219,69 @@ with tab_port:
             st.info("You need at least 2 active stock positions to calculate correlation.")
         else:
             if st.button("Generate Correlation Heatmap"):
-                with st.spinner("Downloading historical returns, bypassing broken tickers..."):
-                    import yfinance as yf
+                with st.spinner("Fetching institutional data via Tiingo..."):
                     import numpy as np
+                    from datetime import datetime, timedelta
+                    import requests
+                    
                     try:
-                        # 1. Clean tickers & DESTROY empty/blank entries
                         clean_tickers = [str(t).strip().upper() for t in active_tickers if pd.notna(t) and str(t).strip() != '']
                         
                         if len(clean_tickers) < 2:
                             st.warning("Not enough valid tickers to run correlation.")
                         else:
-                            # 2. BULLETPROOF EXTRACTION (Fetch 1-by-1 to avoid all yfinance format bugs)
                             price_dict = {}
+                            start_str = (datetime.today() - timedelta(days=180)).strftime('%Y-%m-%d')
+                            
+                            # Grab your existing Tiingo API key
+                            api_key = getattr(data_client, 'api_key', None) 
+                            if not api_key: api_key = os.getenv("TIINGO_API_KEY")
+                            
                             for t in clean_tickers:
                                 try:
-                                    hist = yf.Ticker(t).history(period="6m")
-                                    if not hist.empty and 'Close' in hist.columns:
-                                        price_dict[t] = hist['Close']
+                                    if "." in t: 
+                                        # EU Stock Fallback -> YFinance
+                                        import yfinance as yf
+                                        hist = yf.Ticker(t).history(period="6m")
+                                        if not hist.empty and 'Close' in hist.columns:
+                                            hist.index = hist.index.tz_localize(None) # Strip timezone
+                                            price_dict[t] = hist['Close']
+                                    else: 
+                                        # US Stock -> Tiingo API (Immune to cloud IP blocking)
+                                        url = f"https://api.tiingo.com/tiingo/daily/{t}/prices"
+                                        params = {'startDate': start_str, 'token': api_key}
+                                        res = requests.get(url, params=params)
+                                        if res.status_code == 200:
+                                            j_data = res.json()
+                                            if len(j_data) > 0:
+                                                df_t = pd.DataFrame(j_data)
+                                                df_t['date'] = pd.to_datetime(df_t['date']).dt.tz_localize(None)
+                                                df_t.set_index('date', inplace=True)
+                                                price_dict[t] = df_t['close']
                                 except Exception:
-                                    pass # Silently skip any ticker that doesn't exist
+                                    pass # Silently skip if a ticker fails
                                     
                             if len(price_dict) < 2:
-                                st.error("Could not download enough price data. Check your internet connection.")
+                                st.error("Could not fetch enough data. Check your Tiingo API key or limit.")
                             else:
-                                # Combine all individual series into one clean table
+                                # Combine into one clean table
                                 close_df = pd.DataFrame(price_dict)
-                                
-                                # 3. Force numeric types, drop empty columns, and fill gaps
                                 close_df = close_df.apply(pd.to_numeric, errors='coerce')
                                 close_df = close_df.dropna(axis=1, how='all')
-                                close_df = close_df.ffill() # Forward-fill missing/halted days
+                                close_df = close_df.ffill() # Forward-fill missing days
                                 
-                                # 4. Calculate daily returns and Pearson correlation
+                                # Calculate daily returns and Pearson correlation
                                 returns = close_df.pct_change()
                                 corr_matrix = returns.corr(method='pearson')
                                 
-                                # 5. Clean up the matrix
+                                # Clean up the matrix
                                 corr_matrix = corr_matrix.fillna(0)
                                 if not corr_matrix.empty:
-                                    np.fill_diagonal(corr_matrix.values, 1.0) # Diagonal is always 1.0
+                                    np.fill_diagonal(corr_matrix.values, 1.0) 
                                 
                                 st.write("**Pearson Correlation Coefficient (Last 6 Months):**")
-                                st.caption("🔴 :red[**Red**] = Danger/High Correlation (Moves Together) | 🟢 :green[**Green**] = Safe/Low Correlation (Moves Independently)")
+                                st.caption("🔴 :red[**Red**] = Danger/High Correlation | 🟢 :green[**Green**] = Safe/Low Correlation")
                                 
-                                # Format the table as a Red/Green Heatmap
                                 styled_corr = corr_matrix.style.background_gradient(cmap='RdYlGn_r', vmin=-0.5, vmax=1.0).format("{:.2f}")
                                 st.dataframe(styled_corr, use_container_width=True)
                                 
@@ -272,7 +291,7 @@ with tab_port:
                                 for i in range(len(cols)):
                                     for j in range(i+1, len(cols)):
                                         val = corr_matrix.iloc[i, j]
-                                        if val > 0.70 and val < 0.99: # >0.70 is the danger threshold
+                                        if val > 0.70 and val < 0.99: 
                                             high_corr_pairs.append(f"**{cols[i]}** & **{cols[j]}** ({val:.2f})")
                                             
                                 if high_corr_pairs:
@@ -283,7 +302,7 @@ with tab_port:
                                     st.success("**✅ Healthy Diversification:** No dangerously correlated pairs detected. Your portfolio risk is well-distributed!")
                                     
                     except Exception as e:
-                        st.error(f"Failed to generate correlation matrix. Please try again. ({e})")
+                        st.error(f"Failed to generate correlation matrix. ({e})")
                         
     st.markdown("---") # Visual separator before the Guardian
 
