@@ -221,22 +221,38 @@ with tab_port:
             if st.button("Generate Correlation Heatmap"):
                 with st.spinner("Downloading 6-month historical returns for your portfolio..."):
                     import yfinance as yf
+                    import numpy as np
                     try:
-                        # Fetch 6 months of daily close data
-                        data = yf.download(active_tickers, period="6m", progress=False)['Close']
+                        # 1. Clean tickers to prevent yfinance query errors
+                        clean_tickers = [t.strip().upper() for t in active_tickers]
                         
-                        # Handle multi-index columns if yfinance returns them
+                        # 2. Fetch 6 months of daily data
+                        data = yf.download(clean_tickers, period="6m", progress=False)
+                        
+                        # 3. Bulletproof extraction of Close prices
                         if isinstance(data.columns, pd.MultiIndex):
-                            data.columns = data.columns.droplevel(1)
+                            if 'Close' in data.columns.get_level_values(0):
+                                close_df = data['Close']
+                            elif 'Close' in data.columns.get_level_values(1):
+                                close_df = data.xs('Close', level=1, axis=1)
+                            else:
+                                close_df = pd.DataFrame()
+                        else:
+                            close_df = data
                             
-                        # Calculate daily returns (Do NOT use global .dropna() here!)
-                        returns = data.pct_change()
+                        # 4. Force numeric types, drop empty columns, and fill gaps
+                        close_df = close_df.apply(pd.to_numeric, errors='coerce')
+                        close_df = close_df.dropna(axis=1, how='all')
+                        close_df = close_df.ffill() # Forward-fill missing/halted days
                         
-                        # Pandas .corr() automatically handles missing days pairwise 
+                        # 5. Calculate daily returns and Pearson correlation
+                        returns = close_df.pct_change()
                         corr_matrix = returns.corr(method='pearson')
                         
-                        # Fill any remaining NaNs with 0 just in case a stock has 0 trading history
+                        # 6. Clean up the matrix
                         corr_matrix = corr_matrix.fillna(0)
+                        if not corr_matrix.empty:
+                            np.fill_diagonal(corr_matrix.values, 1.0) # Diagonal is always 1.0
                         
                         st.write("**Pearson Correlation Coefficient (Last 6 Months):**")
                         st.caption("🔴 :red[**Red**] = Danger/High Correlation (Moves Together) | 🟢 :green[**Green**] = Safe/Low Correlation (Moves Independently)")
@@ -250,8 +266,9 @@ with tab_port:
                         cols = corr_matrix.columns
                         for i in range(len(cols)):
                             for j in range(i+1, len(cols)):
-                                if corr_matrix.iloc[i, j] > 0.70: # 0.70 is the institutional danger threshold
-                                    high_corr_pairs.append(f"**{cols[i]}** & **{cols[j]}** ({corr_matrix.iloc[i, j]:.2f})")
+                                val = corr_matrix.iloc[i, j]
+                                if val > 0.70 and val < 0.99: # >0.70 is the danger threshold
+                                    high_corr_pairs.append(f"**{cols[i]}** & **{cols[j]}** ({val:.2f})")
                                     
                         if high_corr_pairs:
                             st.error(f"**⚠️ Concentration Risk Detected:** The following pairs are highly correlated (>0.70). If one drops, the other is highly likely to crash with it. Consider rotating one out:")
