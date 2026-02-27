@@ -221,15 +221,39 @@ with tab_port:
         with st.expander("➕ Add Single Position / Deposit Cash"):
             with st.form("buy_form"):
                 b_ticker = st.text_input("Ticker (Use 'EUR' for Cash)", "AAPL").upper()
-                b_price = st.number_input("Entry Price (1.0 for EUR)", min_value=0.0, value=150.0)
-                b_qty = st.number_input("Quantity", min_value=1.0, value=10.0)
+                b_price = st.number_input("Entry Price (1.0 for EUR)", min_value=0.0, value=1.0)
+                b_qty = st.number_input("Quantity", min_value=1.0, value=1000.0)
                 b_target = st.number_input("Target Price (Optional)", min_value=0.0, value=0.0)
+                
                 if st.form_submit_button("Execute Buy / Deposit"):
-                    if pm.execute_buy(b_ticker, b_price, b_qty, b_target):
-                        st.success(f"Successfully added {b_qty} of {b_ticker}!")
-                        st.rerun()
+                    if b_ticker == 'EUR':
+                        # Bypass the purchase check and inject cash directly
+                        try:
+                            conn = sqlite3.connect("data/hedgefund.db")
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT id, quantity FROM portfolio WHERE ticker = 'EUR' AND status = 'OPEN'")
+                            row = cursor.fetchone()
+                            if row:
+                                new_qty = row[1] + b_qty
+                                cursor.execute("UPDATE portfolio SET quantity = ? WHERE id = ?", (new_qty, row[0]))
+                            else:
+                                date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                cursor.execute("INSERT INTO portfolio (ticker, cost, quantity, target, status, date_acquired) VALUES ('EUR', 1.0, ?, 0.0, 'OPEN', ?)", (b_qty, date_str))
+                            conn.commit()
+                            conn.close()
+                            st.success(f"Successfully deposited €{b_qty:,.2f} into cash reserves!")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to deposit cash: {e}")
                     else:
-                        st.error("Failed. Check cash balance or inputs.")
+                        # Standard stock purchase logic
+                        if pm.execute_buy(b_ticker, b_price, b_qty, b_target):
+                            st.success(f"Successfully added {b_qty} of {b_ticker}!")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Failed. Check cash balance or inputs.")
 
         with st.expander("📥 Bulk Inject Existing Portfolio (No Cash Deduction)"):
             st.write("Format: `TICKER, QUANTITY, AVG_PRICE` (Use 'EUR' to set initial cash)")
