@@ -456,19 +456,41 @@ with tab_radar:
         st.session_state.scan_df_final = None
         st.session_state.scan_top_20_alpha = None
     
-    with st.expander("🌍 Market Regime Check", expanded=True):
-        with st.spinner("Checking market trend..."):
-            regime = data_client.get_regime('SPY')
-            
-        if regime:
-            if not regime['bullish']:
-                st.error("🔴 RISK OFF: Broad Market is in a Downtrend")
-                st.warning(f"SPY is trading at ${regime['price']}, BELOW its 200-day SMA of ${regime['sma']}. Institutional models suggest caution, but scanning is enabled.")
-            else:
-                st.success("🟢 RISK ON: Broad Market is in an Uptrend")
-                st.write(f"SPY is trading at ${regime['price']}, ABOVE its 200-day SMA of ${regime['sma']}.")
-        else:
-            st.warning("Regime check failed.")
+    with st.expander("🌍 Institutional Market Regime Check", expanded=True):
+        with st.spinner("Analyzing SPY Trend and VIX Volatility..."):
+            import yfinance as yf
+            try:
+                # Fetch SPY and VIX data
+                spy_data = yf.Ticker("SPY").history(period="1y")
+                vix_data = yf.Ticker("^VIX").history(period="1mo")
+                
+                if not spy_data.empty and not vix_data.empty:
+                    spy_price = spy_data['Close'].iloc[-1]
+                    spy_sma200 = spy_data['Close'].rolling(window=200).mean().iloc[-1]
+                    vix_price = vix_data['Close'].iloc[-1]
+                    
+                    spy_bullish = spy_price > spy_sma200
+                    vix_safe = vix_price < 20.0 # 20 is the historical line between calm and fear
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("SPY Price", f"${spy_price:.2f}", f"{'Above' if spy_bullish else 'Below'} 200 SMA", delta_color="normal" if spy_bullish else "inverse")
+                    col2.metric("SPY 200-Day SMA", f"${spy_sma200:.2f}")
+                    col3.metric("VIX (Fear Index)", f"{vix_price:.2f}", f"{'High Risk' if not vix_safe else 'Low Risk'}", delta_color="inverse")
+                    
+                    st.markdown("---")
+                    
+                    if spy_bullish and vix_safe:
+                        st.success("🟢 **RISK ON:** Broad market is in an uptrend (SPY > 200 SMA) and volatility is low (VIX < 20). Optimal environment for long setups.")
+                    elif spy_bullish and not vix_safe:
+                        st.warning("🟡 **CAUTION (High Volatility):** Market is in an uptrend, but the VIX is elevated (≥ 20). Options traders are buying protection. Expect violent intraday swings.")
+                    elif not spy_bullish and vix_safe:
+                        st.warning("🟡 **CAUTION (Slow Bleed):** Market is below its 200-day SMA (downtrend), but there is no structural panic (VIX < 20). Exercise strict stock selection.")
+                    else:
+                        st.error("🔴 **RISK OFF (Bear Market):** SPY is below the 200-day SMA AND volatility is spiking (VIX ≥ 20). Capital preservation is the priority. Tighten all stops.")
+                else:
+                    st.warning("Failed to fetch regime data.")
+            except Exception as e:
+                st.error(f"Regime check error: {e}")
 
     tickers_to_scan = get_sp500_tickers()
 
