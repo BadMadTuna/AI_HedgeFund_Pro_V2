@@ -384,21 +384,40 @@ with tab_port:
 
     if st.button("🛡️ Run AI Guardian Audit on Portfolio"):
         audit_df = st.session_state.live_port_df if st.session_state.live_port_df is not None else df_port
-        if audit_df.empty or len(audit_df[audit_df['ticker'] != 'EUR']) == 0:
+        stocks_to_audit = audit_df[audit_df['ticker'] != 'EUR']
+        
+        if stocks_to_audit.empty:
             st.warning("No active stocks to audit.")
         else:
-            with st.spinner("Guardian is analyzing your holdings..."):
+            with st.spinner("Guardian is running a concurrent audit on your holdings..."):
                 audit_results = []
-                for _, row in audit_df[audit_df['ticker'] != 'EUR'].iterrows():
-                    ticker = row['ticker']
-                    v = agent.get_guardian_audit(ticker, row.to_dict(), data_client.get_news(ticker), data_client.get_earnings_date(ticker))
-                    audit_results.append({
+                
+                # 1. Define the worker function
+                def run_guardian(row_data):
+                    ticker = row_data['ticker']
+                    news = data_client.get_news(ticker)
+                    earn = data_client.get_earnings_date(ticker)
+                    v = agent.get_guardian_audit(ticker, row_data, news, earn)
+                    return {
                         'Ticker': ticker, 
                         'Action': v.get('action', 'N/A'), 
                         'Earnings Risk': v.get('earnings_risk', 'Unknown'),
                         'AI Advice': v.get('reasoning', ''),
                         'Execution Plan': v.get('proposed_stop', '')
-                    })
+                    }
+
+                # 2. Fire off 5 API calls at a time
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = {executor.submit(run_guardian, row.to_dict()): row for _, row in stocks_to_audit.iterrows()}
+                    
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            res = future.result()
+                            if res:
+                                audit_results.append(res)
+                        except Exception as e:
+                            st.error(f"Guardian failed on a ticker: {e}")
+                            
                 st.session_state.guardian_audit_df = pd.DataFrame(audit_results)
 
     # Note: Placed outside the button so it survives downloads
@@ -521,26 +540,42 @@ with tab_radar:
             df_alpha = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False)
             top_20_alpha = df_alpha.head(20)
             
-            # --- TIER 3: AI HUNTER ---
+            # --- TIER 3: AI HUNTER (MULTITHREADED) ---
             st.subheader("🧠 Tier 3: AI Deep Dive (Top 20 Quantamental)")
             final_results = []
             ai_progress = st.progress(0)
 
-            for i, t in enumerate(top_20_alpha['Ticker']):
-                tech_fund_data = top_20_alpha.iloc[i].to_dict() 
+            # 1. Define the AI fetching function
+            def fetch_ai_verdict(row_data):
+                t = row_data['Ticker']
                 news = data_client.get_news(t)
                 earn = data_client.get_earnings_date(t)
                 
-                ai_res = agent.get_hunter_verdict(t, tech_fund_data, news, earn)
+                # Ask the AI
+                ai_res = agent.get_hunter_verdict(t, row_data, news, earn)
                 
-                final_results.append({
-                    "Ticker": t, "Price": tech_fund_data['Price'], "Sector": tech_fund_data['Sector'], 
-                    "Alpha Score": tech_fund_data['Alpha_Score'], "Quality": f"ROE: {tech_fund_data['ROE']}",
+                return {
+                    "Ticker": t, "Price": row_data['Price'], "Sector": row_data['Sector'], 
+                    "Alpha Score": row_data['Alpha_Score'], "Quality": f"ROE: {row_data['ROE']}",
                     "AI Score": ai_res.get('score', 0), "Verdict": ai_res.get('verdict', 'ERROR'),
                     "Earnings": earn, "Reasoning": ai_res.get('reasoning', '')
-                })
-                ai_progress.progress((i + 1) / len(top_20_alpha))
-                time.sleep(1) 
+                }
+
+            # 2. Blast 5 concurrent requests at a time to the AI to bypass the bottleneck
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                # Convert rows to dicts for the threaded function
+                futures = {executor.submit(fetch_ai_verdict, row.to_dict()): row for _, row in top_20_alpha.iterrows()}
+                
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                    try:
+                        res = future.result()
+                        if res: 
+                            final_results.append(res)
+                    except Exception as e:
+                        st.error(f"AI failed on a ticker: {e}")
+                    
+                    # Update progress bar
+                    ai_progress.progress((i + 1) / len(top_20_alpha))
 
             df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
             
@@ -696,6 +731,29 @@ with tab_analyze:
                 else: st.error(f"Score: {ai_res.get('score')} | Verdict: AVOID")
                 
                 st.write(ai_res.get('reasoning'))
+
+                # --- NEW: EXACT TRADE SIZING & ATR STOP LOSS ---
+                st.markdown("### ⚖️ Institutional Trade Sizing (1% Risk)")
+                equity_summary = pm.get_equity_summary()
+                ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
+                fx_rate = st.session_state.get('current_fx_rate', 0.92)
+                
+                is_eu = "." in a_ticker
+                math_equity = ACCOUNT_SIZE if is_eu else (ACCOUNT_SIZE / fx_rate)
+                sizing = data_client.get_atr_and_sizing(a_ticker, account_value=math_equity, risk_pct=0.01)
+                
+                if sizing:
+                    price_eur = sizing['Current_Price'] if is_eu else (sizing['Current_Price'] * fx_rate)
+                    invest_eur = sizing['Total_Investment'] if is_eu else (sizing['Total_Investment'] * fx_rate)
+                    stop_eur = sizing['Stop_Loss'] if is_eu else (sizing['Stop_Loss'] * fx_rate)
+                    risk_eur = sizing['Max_Loss_Risk'] if is_eu else (sizing['Max_Loss_Risk'] * fx_rate)
+                    
+                    st.info(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Total Equity):**\n"
+                               f"- Buy **{sizing['Shares']} shares** at approx **€{price_eur:,.2f}**\n"
+                               f"- Total Capital Deployed: **€{invest_eur:,.2f}**\n"
+                               f"- Hard Stop Loss: **€{stop_eur:,.2f}** (Calculated at 2x ATR)\n"
+                               f"- Max Risk if stopped out: **€{risk_eur:,.2f}**")
+                # -----------------------------------------------
 
 with tab_journal:
     st.header("📓 Trade Journal")
