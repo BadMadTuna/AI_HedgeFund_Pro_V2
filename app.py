@@ -22,6 +22,14 @@ def get_clients():
 
 data_client, agent, pm = get_clients()
 
+# --- GLOBAL MACRO STATE INITIALIZATION ---
+if 'current_regime' not in st.session_state:
+    regime_data = data_client.get_market_regime("SPY")
+    if regime_data:
+        st.session_state.current_regime = regime_data['regime']
+    else:
+        st.session_state.current_regime = 'VOLATILE_BEAR' # Failsafe
+
 # --- HELPERS ---
 @st.cache_data(ttl=86400) # Cache for 24 hours
 def get_sp500_tickers():
