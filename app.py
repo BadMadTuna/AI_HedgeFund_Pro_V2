@@ -857,7 +857,11 @@ with tab_analyze:
                 st.text(news)
                 
                 st.markdown("### 🧠 Quantamental AI Verdict")
-                ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn)
+                # 1. Fetch the current regime from the session state (default to strict defense if not found)
+                current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
+                
+                # 2. Ask the AI (Now passing the regime!)
+                ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn, current_regime)
                 
                 if ai_res.get('verdict') == "BUY": st.success(f"Score: {ai_res.get('score')} | Verdict: BUY")
                 elif ai_res.get('verdict') == "WATCH": st.warning(f"Score: {ai_res.get('score')} | Verdict: WATCH")
