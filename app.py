@@ -126,7 +126,6 @@ with tab_port:
 
             # 4. Fallback for EU tickers (Frankfurt/Xetra etc.)
             if eu_tickers:
-                import yfinance as yf
                 for t in eu_tickers:
                     try:
                         # Fast_info is significantly faster and less prone to blocking than full history
@@ -400,25 +399,24 @@ with tab_port:
         audit_df = st.session_state.live_port_df if st.session_state.live_port_df is not None else df_port
         stocks_to_audit = audit_df[audit_df['ticker'] != 'EUR']
         
+        # --- THREAD SAFETY FIX: Fetch regime in the Main Thread ---
+        active_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
+        
         if stocks_to_audit.empty:
             st.warning("No active stocks to audit.")
         else:
-            with st.spinner("Guardian is running a concurrent audit on your holdings..."):
+            with st.spinner(f"Guardian is running a concurrent audit ({active_regime.replace('_', ' ')}) on your holdings..."):
                 audit_results = []
                 
-                # 1. Define the worker function
-                def run_guardian(row_data):
+                # 1. Define worker function to accept regime as an argument
+                def run_guardian(row_data, macro_regime):
                     ticker = row_data['ticker']
                     news = data_client.get_news(ticker)
                     earn = data_client.get_earnings_date(ticker)
-                    
-                    # NEW: Fetch fundamentals so the Guardian can see the dividend yield
                     funds = data_client.get_fundamentals(ticker) 
                     
-                    current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
-                    
-                    # Pass the funds into the audit
-                    v = agent.get_guardian_audit(ticker, row_data, news, earn, funds, current_regime)
+                    # Pass the explicit string, NOT st.session_state
+                    v = agent.get_guardian_audit(ticker, row_data, news, earn, funds, macro_regime)
                     
                     return {
                         'Ticker': ticker, 
@@ -428,9 +426,9 @@ with tab_port:
                         'Execution Plan': v.get('proposed_stop', '')
                     }
 
-                # 2. Fire off 5 API calls at a time
+                # 2. Pass active_regime into the threads
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    futures = {executor.submit(run_guardian, row.to_dict()): row for _, row in stocks_to_audit.iterrows()}
+                    futures = {executor.submit(run_guardian, row.to_dict(), active_regime): row for _, row in stocks_to_audit.iterrows()}
                     
                     for future in concurrent.futures.as_completed(futures):
                         try:
@@ -681,14 +679,14 @@ with tab_radar:
             final_results = []
             ai_progress = st.progress(0)
 
-            # Define the universal AI fetching function
-            def fetch_ai_verdict(row_data):
+            # Define worker function to accept regime as an argument
+            def fetch_ai_verdict(row_data, macro_regime):
                 t = row_data['Ticker']
                 news = data_client.get_news(t)
                 earn = data_client.get_earnings_date(t)
                 
-                # Ask the AI, explicitly passing the current macro environment
-                ai_res = agent.get_hunter_verdict(t, row_data, news, earn, current_regime)
+                # Ask the AI using the explicitly passed regime
+                ai_res = agent.get_hunter_verdict(t, row_data, news, earn, macro_regime)
                 
                 return {
                     "Ticker": t, "Price": row_data.get('Price', 0), "Sector": row_data.get('Sector', 'Unknown'), 
@@ -699,7 +697,8 @@ with tab_radar:
 
             # Blast 5 concurrent requests at a time
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(fetch_ai_verdict, row.to_dict()): row for _, row in candidates_df.iterrows()}
+                # current_regime was already fetched at the top of the button block
+                futures = {executor.submit(fetch_ai_verdict, row.to_dict(), current_regime): row for _, row in candidates_df.iterrows()}
                 
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
                     try:
@@ -896,7 +895,7 @@ with tab_analyze:
                     "Dividend_Yield": div_str
                 }
                 
-                # Fetch current regime
+                # Fetch current regime from global state
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
                 
                 # Run the AI
