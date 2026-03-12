@@ -393,11 +393,20 @@ with tab_port:
                 audit_results = []
                 
                 # 1. Define the worker function
+                # In app.py -> tab_port -> run_guardian()
                 def run_guardian(row_data):
                     ticker = row_data['ticker']
                     news = data_client.get_news(ticker)
                     earn = data_client.get_earnings_date(ticker)
-                    v = agent.get_guardian_audit(ticker, row_data, news, earn)
+                    
+                    # NEW: Fetch fundamentals so the Guardian can see the dividend yield
+                    funds = data_client.get_fundamentals(ticker) 
+                    
+                    current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
+                    
+                    # Pass the funds into the audit
+                    v = agent.get_guardian_audit(ticker, row_data, news, earn, funds, current_regime)
+                    
                     return {
                         'Ticker': ticker, 
                         'Action': v.get('action', 'N/A'), 
@@ -456,137 +465,237 @@ with tab_radar:
         st.session_state.scan_df_final = None
         st.session_state.scan_top_20_alpha = None
     
-    with st.expander("🌍 Institutional Market Regime Check", expanded=True):
-        with st.spinner("Analyzing SPY Trend and VIX Volatility..."):
-            import yfinance as yf
-            try:
-                # Fetch SPY and VIX data
-                spy_data = yf.Ticker("SPY").history(period="1y")
-                vix_data = yf.Ticker("^VIX").history(period="1mo")
+
+    with st.expander("🌍 Layer 1: Macro Regime Classifier (The Brain)", expanded=True):
+        with st.spinner("Calculating Trend-Volatility Matrix..."):
+            
+            # Fetch the regime using our new function
+            regime_data = data_client.get_market_regime("SPY")
+            
+            if regime_data:
+                # Save globally so the PortfolioManager and AI can use it
+                st.session_state.current_regime = regime_data['regime'] 
+                metrics = regime_data['metrics']
                 
-                if not spy_data.empty and not vix_data.empty:
-                    spy_price = spy_data['Close'].iloc[-1]
-                    spy_sma200 = spy_data['Close'].rolling(window=200).mean().iloc[-1]
-                    vix_price = vix_data['Close'].iloc[-1]
-                    
-                    spy_bullish = spy_price > spy_sma200
-                    vix_safe = vix_price < 20.0 # 20 is the historical line between calm and fear
-                    
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("SPY Price", f"${spy_price:.2f}", f"{'Above' if spy_bullish else 'Below'} 200 SMA", delta_color="normal" if spy_bullish else "inverse")
-                    col2.metric("SPY 200-Day SMA", f"${spy_sma200:.2f}")
-                    col3.metric("VIX (Fear Index)", f"{vix_price:.2f}", f"{'High Risk' if not vix_safe else 'Low Risk'}", delta_color="inverse")
-                    
-                    st.markdown("---")
-                    
-                    if spy_bullish and vix_safe:
-                        st.success("🟢 **RISK ON:** Broad market is in an uptrend (SPY > 200 SMA) and volatility is low (VIX < 20). Optimal environment for long setups.")
-                    elif spy_bullish and not vix_safe:
-                        st.warning("🟡 **CAUTION (High Volatility):** Market is in an uptrend, but the VIX is elevated (≥ 20). Options traders are buying protection. Expect violent intraday swings.")
-                    elif not spy_bullish and vix_safe:
-                        st.warning("🟡 **CAUTION (Slow Bleed):** Market is below its 200-day SMA (downtrend), but there is no structural panic (VIX < 20). Exercise strict stock selection.")
-                    else:
-                        st.error("🔴 **RISK OFF (Bear Market):** SPY is below the 200-day SMA AND volatility is spiking (VIX ≥ 20). Capital preservation is the priority. Tighten all stops.")
-                else:
-                    st.warning("Failed to fetch regime data.")
-            except Exception as e:
-                st.error(f"Regime check error: {e}")
+                # Dynamic UI Styling based on state
+                regime_colors = {
+                    "QUIET_BULL": "🟢",
+                    "VOLATILE_BULL": "🟡",
+                    "QUIET_BEAR": "🟠",
+                    "VOLATILE_BEAR": "🔴"
+                }
+                icon = regime_colors.get(regime_data['regime'], "⚪")
+                
+                st.markdown(f"### {icon} CURRENT REGIME: **{regime_data['regime'].replace('_', ' ')}**")
+                st.info(f"**System Directive:** {regime_data['recommended_action']}")
+                
+                st.markdown("---")
+                c1, c2, c3, c4 = st.columns(4)
+                
+                # Trend Metrics
+                trend_color = "normal" if metrics['current_price'] > metrics['sma_200'] else "inverse"
+                c1.metric("SPY Price", f"${metrics['current_price']}", 
+                          f"{'Above' if trend_color=='normal' else 'Below'} 200 SMA", delta_color=trend_color)
+                c2.metric("SPY 50-Day SMA", f"${metrics['sma_50']}")
+                
+                # Volatility Metrics
+                vol_color = "inverse" if metrics['current_volatility'] > metrics['baseline_volatility'] else "normal"
+                c3.metric("Realized Volatility (Rolling 20-Day)", f"{metrics['current_volatility']}%", 
+                          f"Baseline: {metrics['baseline_volatility']}%", delta_color=vol_color)
+                c4.metric("Volatility Status", 
+                          "HIGH (Over Median)" if metrics['current_volatility'] > metrics['baseline_volatility'] else "NORMAL (Under Median)",
+                          delta_color=vol_color)
+                
+            else:
+                st.error("Failed to load Macro Regime data. The fund is locked for safety.")
 
     tickers_to_scan = get_sp500_tickers()
 
-    if st.button("🚀 Launch Quantamental Alpha Scan", type="primary"):
-        st.subheader("⚙️ Tier 1: Momentum Filter (Broad Scan)")
-        quant_results = []
-        progress_bar = st.progress(0)
+    if st.button("🚀 Launch Multi-Engine Alpha Scan", type="primary"):
+        # Fetch the current regime (default to strict safety if missing)
+        current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
         
-        def fetch_quant(t):
-            sector_etf = data_client.get_sector_for_ticker(t)
-            sector_regime = data_client.get_regime(sector_etf)
-            metrics = data_client.get_smart_momentum(t)
-            if not metrics: return None
-            
-            tech = data_client.get_technicals(t)
-            if not tech: return None
-
-            return {
-                'Ticker': t, 'Sector': sector_etf,
-                'Sector Health': sector_regime['status'] if sector_regime else "Unknown",
-                'Price': metrics['Current_Price'], 'Smooth_Score': metrics['Smooth_Score'],
-                **tech
-            }
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(fetch_quant, t): t for t in tickers_to_scan}
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                res = future.result()
-                if res: quant_results.append(res)
-                progress_bar.progress((i + 1) / len(tickers_to_scan))
+        st.subheader(f"⚙️ Layer 2 Dispatch: Adapting to {current_regime.replace('_', ' ')}")
+        candidates_df = pd.DataFrame()
         
-        if quant_results:
-            df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
-            top_50_df = df_quant.head(50)
+        # ==========================================
+        # ENGINE A: MOMENTUM (QUIET_BULL)
+        # ==========================================
+        if current_regime == "QUIET_BULL":
+            st.info("🟢 Deploying ENGINE A: Momentum Breakout Hunter...")
+            quant_results = []
+            progress_bar = st.progress(0)
             
-            st.subheader("🔬 Tier 2: Fundamental Alpha Score (Quality + Value)")
-            st.write("Fetching corporate fundamentals for the Top 50 momentum leaders...")
-            
-            fund_results = []
-            fund_pb = st.progress(0)
-            
-            def fetch_fund(row):
-                t = row['Ticker']
-                funds = data_client.get_fundamentals(t)
+            def fetch_quant(t):
+                sector_etf = data_client.get_sector_for_ticker(t)
+                sector_regime = data_client.get_regime(sector_etf)
+                metrics = data_client.get_smart_momentum(t)
+                if not metrics: return None
                 
-                smooth_pts = row['Smooth_Score'] * 10 
-                quality_pts = (funds['ROE'] * 50) + (funds['Gross_Margin'] * 20)
-                ev = funds['EV_EBITDA']
-                ev_pts = max(0, 30 - ev) if ev > 0 else 0 
-                value_pts = (funds['FCF_Yield'] * 200) + ev_pts
-                
-                alpha_score = smooth_pts + quality_pts + value_pts
-                
+                tech = data_client.get_technicals(t)
+                if not tech: return None
+
                 return {
-                    **row,
-                    'ROE': f"{funds['ROE']:.1%}",
-                    'Margin': f"{funds['Gross_Margin']:.1%}",
-                    'EV/EBITDA': round(funds['EV_EBITDA'], 1),
-                    'Alpha_Score': round(alpha_score, 1)
+                    'Ticker': t, 'Sector': sector_etf,
+                    'Sector Health': sector_regime['status'] if sector_regime else "Unknown",
+                    'Price': metrics['Current_Price'], 'Smooth_Score': metrics['Smooth_Score'],
+                    **tech
                 }
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures2 = {executor.submit(fetch_fund, row.to_dict()): row for _, row in top_50_df.iterrows()}
-                for i, future in enumerate(concurrent.futures.as_completed(futures2)):
+                futures = {executor.submit(fetch_quant, t): t for t in tickers_to_scan}
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
                     res = future.result()
-                    if res: fund_results.append(res)
-                    fund_pb.progress((i + 1) / len(top_50_df))
+                    if res: quant_results.append(res)
+                    progress_bar.progress((i + 1) / len(tickers_to_scan))
             
-            df_alpha = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False)
-            top_20_alpha = df_alpha.head(20)
+            if quant_results:
+                df_quant = pd.DataFrame(quant_results).sort_values(by="Smooth_Score", ascending=False)
+                top_50_df = df_quant.head(50)
+                
+                st.subheader("🔬 Tier 2: Fundamental Alpha Score (Quality + Value)")
+                st.write("Fetching corporate fundamentals for the Top 50 momentum leaders...")
+                
+                fund_results = []
+                fund_pb = st.progress(0)
+                
+                def fetch_fund(row):
+                    t = row['Ticker']
+                    funds = data_client.get_fundamentals(t)
+                    
+                    smooth_pts = row['Smooth_Score'] * 10 
+                    quality_pts = (funds['ROE'] * 50) + (funds['Gross_Margin'] * 20)
+                    ev = funds['EV_EBITDA']
+                    ev_pts = max(0, 30 - ev) if ev > 0 else 0 
+                    value_pts = (funds['FCF_Yield'] * 200) + ev_pts
+                    
+                    alpha_score = smooth_pts + quality_pts + value_pts
+                    
+                    return {
+                        **row,
+                        'ROE': f"{funds['ROE']:.1%}",
+                        'Margin': f"{funds['Gross_Margin']:.1%}",
+                        'EV/EBITDA': round(funds['EV_EBITDA'], 1),
+                        'Alpha_Score': round(alpha_score, 1),
+                        'Primary_Metric': f"Alpha: {round(alpha_score, 1)}" # Unifies data for the UI
+                    }
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures2 = {executor.submit(fetch_fund, row.to_dict()): row for _, row in top_50_df.iterrows()}
+                    for i, future in enumerate(concurrent.futures.as_completed(futures2)):
+                        res = future.result()
+                        if res: fund_results.append(res)
+                        fund_pb.progress((i + 1) / len(top_50_df))
+                
+                candidates_df = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False).head(20)
+
+        # ==========================================
+        # ENGINE B: MEAN REVERSION (VOLATILE REGIMES)
+        # ==========================================
+        elif current_regime in ["VOLATILE_BULL", "VOLATILE_BEAR"]:
+            st.warning("🟡 Deploying ENGINE B: Mean Reversion / Panic Buyer...")
+            rev_results = []
+            progress_bar = st.progress(0)
             
-            # --- TIER 3: AI HUNTER (MULTITHREADED) ---
-            st.subheader("🧠 Tier 3: AI Deep Dive (Top 20 Quantamental)")
+            def fetch_reversion(t):
+                rev_metrics = data_client.get_mean_reversion_metrics(t)
+                if not rev_metrics or not rev_metrics.get('Is_Oversold_Setup'): 
+                    return None
+                
+                # Quality filter: Must have positive Free Cash Flow to survive the dip
+                funds = data_client.get_fundamentals(t)
+                if funds['FCF_Yield'] <= 0: 
+                    return None
+                    
+                sector = data_client.get_sector_for_ticker(t)
+                return {
+                    **rev_metrics,
+                    'Sector': sector,
+                    'FCF_Yield': f"{funds['FCF_Yield']:.1%}",
+                    'ROE': f"{funds['ROE']:.1%}",
+                    'Price': rev_metrics['Current_Price'],
+                    'Primary_Metric': f"Upside to Mean: {rev_metrics['Upside_to_Mean']:.1%}"
+                }
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(fetch_reversion, t): t for t in tickers_to_scan}
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                    res = future.result()
+                    if res: rev_results.append(res)
+                    progress_bar.progress((i + 1) / len(tickers_to_scan))
+                    
+            if rev_results:
+                candidates_df = pd.DataFrame(rev_results).sort_values(by="Upside_to_Mean", ascending=False).head(20)
+                st.dataframe(candidates_df, use_container_width=True)
+            else:
+                st.info("No statistically significant quality mean-reversion setups found today.")
+
+        # ==========================================
+        # ENGINE C: DEEP VALUE (QUIET_BEAR)
+        # ==========================================
+        elif current_regime == "QUIET_BEAR":
+            st.info("🟠 Deploying ENGINE C: Deep Value / Fortress Balance Sheet Hunter...")
+            val_results = []
+            progress_bar = st.progress(0)
+            
+            def fetch_value(t):
+                val_metrics = data_client.get_deep_value_metrics(t)
+                if not val_metrics: return None
+                
+                # STRICT BEAR MARKET FILTERS: 
+                # Must pay a dividend > 2%, or have an EV/EBITDA < 12 with positive cash flow
+                if val_metrics['Dividend_Yield'] < 0.02 and (val_metrics['EV_EBITDA'] > 12 or val_metrics['FCF_Yield'] <= 0):
+                    return None
+                    
+                sector = data_client.get_sector_for_ticker(t)
+                return {
+                    **val_metrics,
+                    'Sector': sector,
+                    'Price': val_metrics['Current_Price'],
+                    'Primary_Metric': f"Value Score: {val_metrics['Value_Score']} | Yield: {val_metrics['Dividend_Yield']:.1%}",
+                    'ROE': 'N/A' # Not the focus here
+                }
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(fetch_value, t): t for t in tickers_to_scan}
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                    res = future.result()
+                    if res: val_results.append(res)
+                    progress_bar.progress((i + 1) / len(tickers_to_scan))
+                    
+            if val_results:
+                candidates_df = pd.DataFrame(val_results).sort_values(by="Value_Score", ascending=False).head(20)
+                st.dataframe(candidates_df[['Ticker', 'Sector', 'Dividend_Yield', 'EV_EBITDA', 'Debt_to_Equity', 'Value_Score']], use_container_width=True)
+            else:
+                st.info("No companies met the strict deep value and yield requirements today.")
+
+        # ==========================================
+        # TIER 3: AI HUNTER (UNIVERSAL DEEP DIVE)
+        # ==========================================
+        if not candidates_df.empty:
+            st.subheader("🧠 Tier 3: AI Deep Dive")
             final_results = []
             ai_progress = st.progress(0)
 
-            # 1. Define the AI fetching function
+            # Define the universal AI fetching function
             def fetch_ai_verdict(row_data):
                 t = row_data['Ticker']
                 news = data_client.get_news(t)
                 earn = data_client.get_earnings_date(t)
                 
-                # Ask the AI
-                ai_res = agent.get_hunter_verdict(t, row_data, news, earn)
+                # Ask the AI, explicitly passing the current macro environment
+                ai_res = agent.get_hunter_verdict(t, row_data, news, earn, current_regime)
                 
                 return {
-                    "Ticker": t, "Price": row_data['Price'], "Sector": row_data['Sector'], 
-                    "Alpha Score": row_data['Alpha_Score'], "Quality": f"ROE: {row_data['ROE']}",
+                    "Ticker": t, "Price": row_data.get('Price', 0), "Sector": row_data.get('Sector', 'Unknown'), 
+                    "Engine Metric": row_data.get('Primary_Metric', 'N/A'), "Quality": f"ROE: {row_data.get('ROE', 'N/A')}",
                     "AI Score": ai_res.get('score', 0), "Verdict": ai_res.get('verdict', 'ERROR'),
                     "Earnings": earn, "Reasoning": ai_res.get('reasoning', '')
                 }
 
-            # 2. Blast 5 concurrent requests at a time to the AI to bypass the bottleneck
+            # Blast 5 concurrent requests at a time
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # Convert rows to dicts for the threaded function
-                futures = {executor.submit(fetch_ai_verdict, row.to_dict()): row for _, row in top_20_alpha.iterrows()}
+                futures = {executor.submit(fetch_ai_verdict, row.to_dict()): row for _, row in candidates_df.iterrows()}
                 
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
                     try:
@@ -596,14 +705,14 @@ with tab_radar:
                     except Exception as e:
                         st.error(f"AI failed on a ticker: {e}")
                     
-                    # Update progress bar
-                    ai_progress.progress((i + 1) / len(top_20_alpha))
+                    ai_progress.progress((i + 1) / len(candidates_df))
 
-            df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
-            
-            # Save results to session state so they persist!
-            st.session_state.scan_df_final = df_final
-            st.session_state.scan_top_20_alpha = top_20_alpha
+            if final_results:
+                df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
+                
+                # Save results to session state so they persist and the outer UI blocks render properly
+                st.session_state.scan_df_final = df_final
+                st.session_state.scan_top_20_alpha = candidates_df
 
     # --- Render Scan UI out here so it survives the download button refresh ---
     if st.session_state.scan_df_final is not None:

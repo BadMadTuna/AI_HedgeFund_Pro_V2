@@ -73,32 +73,64 @@ class MarketDataClient:
         except Exception:
             return None
 
-    def get_regime(self, ticker='SPY'):
-        """Fetches trend regime for a specific ticker (SPY or Sector ETF)."""
+    def get_market_regime(self, ticker='SPY'):
+        """
+        Advanced Layer 1: Trend-Volatility Matrix Classifier.
+        Evaluates Trend (Moving Averages) and Realized Volatility to classify the market state.
+        """
         try:
-            end_date = datetime.today()
-            start_date = end_date - timedelta(days=380)
-            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-            params = {'startDate': start_date.strftime('%Y-%m-%d'), 'token': self.api_key}
-            
-            res = requests.get(url, params=params)
-            data = res.json()
-            if not data: return None
+            # Fetch 1 year of data to calculate long-term baselines
+            hist = yf.Ticker(ticker).history(period="1y")
+            if hist.empty:
+                return None
 
-            df = pd.DataFrame(data)
-            df['close'] = df['close'].astype(float)
+            close_prices = hist['Close']
             
-            current_price = df['close'].iloc[-1]
-            sma_200 = df['close'].rolling(window=200).mean().iloc[-1]
-            status = "RISK ON" if current_price > sma_200 else "RISK OFF"
+            # 1. Calculate Trend (Fast vs Slow SMA Crossover is more robust than just Price vs SMA)
+            sma_50 = close_prices.rolling(window=50).mean().iloc[-1]
+            sma_200 = close_prices.rolling(window=200).mean().iloc[-1]
+            current_price = close_prices.iloc[-1]
             
+            # Is the structural trend up or down?
+            is_uptrend = sma_50 > sma_200 and current_price > sma_200
+
+            # 2. Calculate Realized Volatility (Rolling 20-day annualized std dev)
+            daily_returns = close_prices.pct_change()
+            rolling_vol = daily_returns.rolling(window=20).std() * np.sqrt(252)
+            
+            current_vol = rolling_vol.iloc[-1]
+            # Calculate the median volatility over the last year to establish a "normal" baseline
+            baseline_vol = rolling_vol.median() 
+            
+            is_high_vol = current_vol > baseline_vol
+
+            # 3. Classify the Regime
+            if is_uptrend and not is_high_vol:
+                regime = "QUIET_BULL"
+                action = "Aggressive Trend/Momentum"
+            elif is_uptrend and is_high_vol:
+                regime = "VOLATILE_BULL"
+                action = "Reduce Size, Blend Momentum with Mean Reversion"
+            elif not is_uptrend and not is_high_vol:
+                regime = "QUIET_BEAR"
+                action = "Defensive Value, High Yield, Cash"
+            else: # not is_uptrend and is_high_vol
+                regime = "VOLATILE_BEAR"
+                action = "Maximum Cash, Trade Extreme Oversold Bounces Only"
+
             return {
-                'status': status,
-                'price': round(current_price, 2),
-                'sma': round(sma_200, 2),
-                'bullish': current_price > sma_200
+                'regime': regime,
+                'recommended_action': action,
+                'metrics': {
+                    'current_price': round(current_price, 2),
+                    'sma_50': round(sma_50, 2),
+                    'sma_200': round(sma_200, 2),
+                    'current_volatility': round(current_vol * 100, 2), # As percentage
+                    'baseline_volatility': round(baseline_vol * 100, 2)
+                }
             }
-        except Exception:
+        except Exception as e:
+            print(f"Regime Engine Error: {e}")
             return None
 
     def get_sector_for_ticker(self, ticker):
@@ -241,3 +273,105 @@ class MarketDataClient:
             return "Safe (Awaiting next quarter date)"
         except Exception:
             return "Safe (Data Error)"
+        
+    def get_mean_reversion_metrics(self, ticker):
+        """
+        Layer 2 (Engine B): Mean Reversion Calculator.
+        Finds extreme oversold conditions in choppy/volatile regimes using Bollinger Bands.
+        """
+        try:
+            # We need ~60 days to calculate a clean 20-day moving average and standard deviation
+            end_date = datetime.today()
+            start_date = end_date - timedelta(days=90)
+            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+            params = {'startDate': start_date.strftime('%Y-%m-%d'), 'token': self.api_key}
+            
+            response = requests.get(url, params=params)
+            data = response.json()
+            if len(data) < 25: return None
+                
+            df = pd.DataFrame(data)
+            df['close'] = df['close'].astype(float)
+            
+            # 1. Calculate Bollinger Bands (20-day SMA, 2 Standard Deviations)
+            df['SMA_20'] = df['close'].rolling(window=20).mean()
+            df['STD_20'] = df['close'].rolling(window=20).std()
+            df['Lower_BB'] = df['SMA_20'] - (2 * df['STD_20'])
+            
+            # 2. Calculate 14-day RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+            loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+            
+            current_price = df['close'].iloc[-1]
+            lower_bb = df['Lower_BB'].iloc[-1]
+            rsi = df['RSI'].iloc[-1]
+            
+            # 3. The Mean Reversion Trigger
+            # Is the price within 1% of the lower band (or below it) AND RSI extremely low?
+            is_oversold = current_price <= (lower_bb * 1.01) and rsi < 35.0
+            
+            # Calculate how far we are from the "Mean" (the 20-day SMA) for potential profit target
+            sma_20 = df['SMA_20'].iloc[-1]
+            upside_to_mean = (sma_20 - current_price) / current_price
+            
+            return {
+                'Ticker': ticker,
+                'Current_Price': round(current_price, 2),
+                'Lower_BB': round(lower_bb, 2),
+                'RSI': round(rsi, 1),
+                'Upside_to_Mean': round(upside_to_mean, 4),
+                'Is_Oversold_Setup': is_oversold
+            }
+        except Exception as e:
+            return None
+        
+    def get_deep_value_metrics(self, ticker: str) -> dict:
+        """
+        Layer 2 (Engine C): Deep Value & Yield Calculator.
+        Hunts for dividend yield, low multiples, and low debt in Quiet Bear regimes.
+        """
+        import yfinance as yf
+        try:
+            info = yf.Ticker(ticker).info
+            
+            # 1. Shareholder Yield (Dividends)
+            div_yield = info.get('dividendYield', 0)
+            if div_yield is None: div_yield = 0
+                
+            # 2. Valuation Multiples
+            ev_ebitda = info.get('enterpriseToEbitda', 99) # Default high if missing
+            price_to_book = info.get('priceToBook', 99)
+            
+            # 3. Balance Sheet Safety (Crucial for Bear Markets)
+            debt_to_equity = info.get('debtToEquity', 999) 
+            
+            # 4. Free Cash Flow
+            fcf = info.get('freeCashflow', 0)
+            market_cap = info.get('marketCap', 1)
+            fcf_yield = fcf / market_cap if market_cap and fcf else 0
+            
+            # 5. Build the Value Score (Higher is better)
+            # Reward high yield and FCF, penalize high debt and high multiples
+            score = (div_yield * 200) + (fcf_yield * 100)
+            
+            if ev_ebitda < 10: score += 20
+            elif ev_ebitda > 20: score -= 30
+                
+            if debt_to_equity < 50: score += 20 # Low debt is a premium in a bear market
+            
+            current_price = info.get('currentPrice', info.get('previousClose', 0))
+            
+            return {
+                'Ticker': ticker,
+                'Current_Price': round(current_price, 2),
+                'Dividend_Yield': round(div_yield, 4),
+                'EV_EBITDA': round(ev_ebitda, 2),
+                'Debt_to_Equity': round(debt_to_equity, 2),
+                'FCF_Yield': round(fcf_yield, 4),
+                'Value_Score': round(score, 2)
+            }
+        except Exception as e:
+            return None

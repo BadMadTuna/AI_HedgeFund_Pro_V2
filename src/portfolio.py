@@ -31,21 +31,37 @@ class PortfolioManager:
             "invested": round(invested, 2)
         }
 
-    def calculate_smart_size(self, entry_price: float, stop_loss: float, risk_pct: float = 1.0) -> int:
-        """Calculates how many shares to buy based on portfolio equity and risk tolerance."""
+    # In src/portfolio.py
+
+    def calculate_smart_size(self, entry_price: float, stop_loss: float, regime: str = "QUIET_BULL", risk_pct: float = 1.0) -> int:
+        """Calculates position size with Dynamic Regime Guardrails."""
         if entry_price <= stop_loss or entry_price <= 0:
             return 0
             
         summary = self.get_equity_summary()
         account_size = summary["total_equity"]
         
+        # 1. Base Risk Calculation
         risk_budget = account_size * (risk_pct / 100.0)
         risk_per_share = entry_price - stop_loss
-        
         shares = int(risk_budget / risk_per_share)
         
-        # Guardrail: Never put more than 20% of total equity into a single trade
-        max_capital_allowed = account_size * 0.20
+        # 2. THE REGIME GUARDRAILS (Dynamic Capital Allocation)
+        # We cap the maximum % of the total portfolio allowed in a single trade based on the environment.
+        if regime == "VOLATILE_BEAR":
+            # Cash is king. Block all new standard long entries.
+            return 0 
+            
+        regime_caps = {
+            "QUIET_BULL": 0.20,    # Max 20% of account per trade (Aggressive)
+            "VOLATILE_BULL": 0.08, # Max 8% of account per trade (Overnight gap risk is high)
+            "QUIET_BEAR": 0.04     # Max 4% of account per trade (Highly defensive)
+        }
+        
+        cap_pct = regime_caps.get(regime, 0.04) # Default to strict defense if unknown
+        max_capital_allowed = account_size * cap_pct
+        
+        # 3. Apply the Cap
         if (shares * entry_price) > max_capital_allowed:
             shares = int(max_capital_allowed / entry_price)
             
