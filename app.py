@@ -719,10 +719,11 @@ with tab_radar:
         df_final = st.session_state.scan_df_final
         top_20_alpha = st.session_state.scan_top_20_alpha
         
-        st.subheader("🔬 Tier 2: Fundamental Alpha Score (Quality + Value)")
-        st.dataframe(top_20_alpha[['Ticker', 'Sector', 'Smooth_Score', 'ROE', 'Margin', 'EV/EBITDA', 'Alpha_Score']], use_container_width=True)
+        st.subheader("🔬 Tier 2: Algorithmic Engine Candidates")
+        # FIX 1: Remove hardcoded columns. Render the dataframe exactly as the Engine built it.
+        st.dataframe(top_20_alpha, use_container_width=True)
 
-        st.subheader("🧠 Tier 3: AI Deep Dive (Top 20 Quantamental)")
+        st.subheader("🧠 Tier 3: AI Deep Dive")
         def highlight_verdict(val):
             if val == 'BUY': return 'background-color: #064e3b; color: white;' 
             elif val == 'WATCH': return 'background-color: #78350f; color: white;' 
@@ -741,7 +742,8 @@ with tab_radar:
         for _, row in df_final.iterrows():
             if row['Verdict'] in ['BUY', 'WATCH']: 
                 with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
-                    st.write(f"**Sector:** {row['Sector']} | **Quantamental Alpha Score:** {row['Alpha Score']}")
+                    # FIX 2: Use the unified 'Engine Metric' we created instead of 'Alpha Score'
+                    st.write(f"**Sector:** {row['Sector']} | **Primary Metric:** {row.get('Engine Metric', 'N/A')}")
                     
                     if row['Verdict'] == 'BUY':
                         is_eu = "." in row['Ticker']
@@ -762,9 +764,9 @@ with tab_radar:
                     st.markdown(row['Reasoning'])
         
         st.divider()
-        st.download_button("📥 Download Complete Quantamental Report (CSV)", 
+        st.download_button("📥 Download Complete Multi-Engine Report (CSV)", 
                            df_final.to_csv(index=False).encode('utf-8'), 
-                           f"quantamental_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
+                           f"multi_engine_scan_{datetime.today().strftime('%Y%m%d')}.csv", 
                            "text/csv")
 
 # ==========================================
