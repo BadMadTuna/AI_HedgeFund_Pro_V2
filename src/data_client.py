@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import yfinance as yf
 import numpy as np
+import time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -230,31 +231,52 @@ class MarketDataClient:
             return "Error fetching news."
         
     def get_fundamentals(self, ticker: str) -> dict:
-        """Fetches Quality and Value metrics to build a Multi-Factor Alpha Score."""
-        import yfinance as yf
+        """Fetches fundamental data with a 12-hour Time-to-Live (TTL) cache."""
+        
+        # 1. Initialize cache if it doesn't exist
+        if not hasattr(self, 'fund_cache'):
+            self.fund_cache = {}
+            
+        # 2. Set Expiration: 12 hours (in seconds)
+        CACHE_TTL = 12 * 3600 
+        current_time = time.time()
+            
+        # 3. Check if we have valid, unexpired data
+        if ticker in self.fund_cache:
+            cached_data, timestamp = self.fund_cache[ticker]
+            
+            # If the data is younger than 12 hours, use it
+            if (current_time - timestamp) < CACHE_TTL:
+                return cached_data
+            else:
+                # The data is stale. Delete it so we fetch fresh data.
+                del self.fund_cache[ticker]
+                
         try:
-            # yfinance info dictionary contains fundamental corporate data
             info = yf.Ticker(ticker).info
             
-            # Quality Metrics (Profitability)
             roe = info.get('returnOnEquity', 0)
             gross_margin = info.get('grossMargins', 0)
-            
-            # Value Metrics (Price)
             ev_ebitda = info.get('enterpriseToEbitda', 0)
             fcf = info.get('freeCashflow', 0)
             market_cap = info.get('marketCap', 1)
             
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
             
-            return {
+            result = {
                 'ROE': roe if roe else 0,
                 'Gross_Margin': gross_margin if gross_margin else 0,
                 'EV_EBITDA': ev_ebitda if ev_ebitda else 0,
                 'FCF_Yield': fcf_yield if fcf_yield else 0
             }
+            
+            # 4. Save the successful result AND the current timestamp to memory
+            if result['FCF_Yield'] != 0 or result['ROE'] != 0:
+                self.fund_cache[ticker] = (result, current_time)
+                
+            return result
+            
         except Exception:
-            # If the data is missing, return 0s so it doesn't break the math
             return {'ROE': 0, 'Gross_Margin': 0, 'EV_EBITDA': 0, 'FCF_Yield': 0}
 
     def get_earnings_date(self, ticker: str) -> str:
