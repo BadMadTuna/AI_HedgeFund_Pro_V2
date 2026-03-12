@@ -857,10 +857,32 @@ with tab_analyze:
                 st.text(news)
                 
                 st.markdown("### 🧠 Quantamental AI Verdict")
-                # 1. Fetch the current regime from the session state (default to strict defense if not found)
+                # --- THE FIX: Build a Unified "God Mode" Payload for the Deep Analyzer ---
+                tech = data_client.get_technicals(a_ticker) or {}
+                funds = data_client.get_fundamentals(a_ticker) or {}
+                mom_metrics = data_client.get_smart_momentum(a_ticker) or {}
+                rev_metrics = data_client.get_mean_reversion_metrics(a_ticker) or {}
+                val_metrics = data_client.get_deep_value_metrics(a_ticker) or {}
+                
+                # Combine everything so the AI has the exact keys it was trained to look for
+                tech_fund_data = {
+                    "Price": tech.get('Current_Price', 0),
+                    "RSI": tech.get('RSI_14', 50),
+                    "ROE": f"{funds.get('ROE', 0):.1%}",
+                    "FCF_Yield": f"{funds.get('FCF_Yield', 0):.1%}", # Explicitly formats FCF!
+                    "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
+                    "EV_EBITDA": funds.get('EV_EBITDA', 0),
+                    "Smooth_Score": mom_metrics.get('Smooth_Score', 0),
+                    "Upside_to_Mean": rev_metrics.get('Upside_to_Mean', 0),
+                    "Lower_BB": rev_metrics.get('Lower_BB', 0),
+                    "Value_Score": val_metrics.get('Value_Score', 0),
+                    "Dividend_Yield": val_metrics.get('Dividend_Yield', 0)
+                }
+                
+                # Fetch current regime
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
                 
-                # 2. Ask the AI (Now passing the regime!)
+                # Run the AI
                 ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn, current_regime)
                 
                 if ai_res.get('verdict') == "BUY": st.success(f"Score: {ai_res.get('score')} | Verdict: BUY")
