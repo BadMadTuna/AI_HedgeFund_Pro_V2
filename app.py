@@ -23,12 +23,18 @@ def get_clients():
 data_client, agent, pm = get_clients()
 
 # --- GLOBAL MACRO STATE INITIALIZATION ---
-if 'current_regime' not in st.session_state:
-    regime_data = data_client.get_market_regime("SPY")
-    if regime_data:
-        st.session_state.current_regime = regime_data['regime']
-    else:
-        st.session_state.current_regime = 'VOLATILE_BEAR' # Failsafe
+if 'current_regime' not in st.session_state or 'regime_metrics' not in st.session_state:
+    with st.spinner("Initializing Macro Environment (Layer 1 Brain)..."):
+        regime_data = data_client.get_market_regime("SPY")
+        if regime_data:
+            st.session_state.current_regime = regime_data['regime']
+            st.session_state.regime_metrics = regime_data['metrics']
+            st.session_state.regime_action = regime_data['recommended_action']
+        else:
+            # Safe Fallbacks
+            st.session_state.current_regime = 'VOLATILE_BEAR' 
+            st.session_state.regime_metrics = {'current_price': 0, 'sma_50': 0, 'sma_200': 0, 'current_volatility': 0, 'baseline_volatility': 0}
+            st.session_state.regime_action = "Maximum Defense"
 
 # --- HELPERS ---
 @st.cache_data(ttl=86400) # Cache for 24 hours
@@ -401,7 +407,6 @@ with tab_port:
                 audit_results = []
                 
                 # 1. Define the worker function
-                # In app.py -> tab_port -> run_guardian()
                 def run_guardian(row_data):
                     ticker = row_data['ticker']
                     news = data_client.get_news(ticker)
@@ -473,49 +478,40 @@ with tab_radar:
         st.session_state.scan_df_final = None
         st.session_state.scan_top_20_alpha = None
     
-
     with st.expander("🌍 Layer 1: Macro Regime Classifier (The Brain)", expanded=True):
-        with st.spinner("Calculating Trend-Volatility Matrix..."):
-            
-            # Fetch the regime using our new function
-            regime_data = data_client.get_market_regime("SPY")
-            
-            if regime_data:
-                # Save globally so the PortfolioManager and AI can use it
-                st.session_state.current_regime = regime_data['regime'] 
-                metrics = regime_data['metrics']
-                
-                # Dynamic UI Styling based on state
-                regime_colors = {
-                    "QUIET_BULL": "🟢",
-                    "VOLATILE_BULL": "🟡",
-                    "QUIET_BEAR": "🟠",
-                    "VOLATILE_BEAR": "🔴"
-                }
-                icon = regime_colors.get(regime_data['regime'], "⚪")
-                
-                st.markdown(f"### {icon} CURRENT REGIME: **{regime_data['regime'].replace('_', ' ')}**")
-                st.info(f"**System Directive:** {regime_data['recommended_action']}")
-                
-                st.markdown("---")
-                c1, c2, c3, c4 = st.columns(4)
-                
-                # Trend Metrics
-                trend_color = "normal" if metrics['current_price'] > metrics['sma_200'] else "inverse"
-                c1.metric("SPY Price", f"${metrics['current_price']}", 
-                          f"{'Above' if trend_color=='normal' else 'Below'} 200 SMA", delta_color=trend_color)
-                c2.metric("SPY 50-Day SMA", f"${metrics['sma_50']}")
-                
-                # Volatility Metrics
-                vol_color = "inverse" if metrics['current_volatility'] > metrics['baseline_volatility'] else "normal"
-                c3.metric("Realized Volatility (Rolling 20-Day)", f"{metrics['current_volatility']}%", 
-                          f"Baseline: {metrics['baseline_volatility']}%", delta_color=vol_color)
-                c4.metric("Volatility Status", 
-                          "HIGH (Over Median)" if metrics['current_volatility'] > metrics['baseline_volatility'] else "NORMAL (Under Median)",
-                          delta_color=vol_color)
-                
-            else:
-                st.error("Failed to load Macro Regime data. The fund is locked for safety.")
+        # NO API CALL HERE! Just read from the synchronized global state.
+        current_reg = st.session_state.current_regime
+        metrics = st.session_state.regime_metrics
+        action = st.session_state.regime_action
+        
+        # Dynamic UI Styling based on state
+        regime_colors = {
+            "QUIET_BULL": "🟢",
+            "VOLATILE_BULL": "🟡",
+            "QUIET_BEAR": "🟠",
+            "VOLATILE_BEAR": "🔴"
+        }
+        icon = regime_colors.get(current_reg, "⚪")
+        
+        st.markdown(f"### {icon} CURRENT REGIME: **{current_reg.replace('_', ' ')}**")
+        st.info(f"**System Directive:** {action}")
+        
+        st.markdown("---")
+        c1, c2, c3, c4 = st.columns(4)
+        
+        # Trend Metrics
+        trend_color = "normal" if metrics['current_price'] > metrics['sma_200'] else "inverse"
+        c1.metric("SPY Price", f"${metrics['current_price']}", 
+                  f"{'Above' if trend_color=='normal' else 'Below'} 200 SMA", delta_color=trend_color)
+        c2.metric("SPY 50-Day SMA", f"${metrics['sma_50']}")
+        
+        # Volatility Metrics
+        vol_color = "inverse" if metrics['current_volatility'] > metrics['baseline_volatility'] else "normal"
+        c3.metric("Realized Volatility (Rolling 20-Day)", f"{metrics['current_volatility']}%", 
+                  f"Baseline: {metrics['baseline_volatility']}%", delta_color=vol_color)
+        c4.metric("Volatility Status", 
+                  "HIGH (Over Median)" if metrics['current_volatility'] > metrics['baseline_volatility'] else "NORMAL (Under Median)",
+                  delta_color=vol_color)
 
     tickers_to_scan = get_sp500_tickers()
 
@@ -865,26 +861,39 @@ with tab_analyze:
                 st.text(news)
                 
                 st.markdown("### 🧠 Quantamental AI Verdict")
-                # --- THE FIX: Build a Unified "God Mode" Payload for the Deep Analyzer ---
+                # --- THE FIX: Formatted & Clarified "God Mode" Payload ---
                 tech = data_client.get_technicals(a_ticker) or {}
                 funds = data_client.get_fundamentals(a_ticker) or {}
                 mom_metrics = data_client.get_smart_momentum(a_ticker) or {}
                 rev_metrics = data_client.get_mean_reversion_metrics(a_ticker) or {}
                 val_metrics = data_client.get_deep_value_metrics(a_ticker) or {}
                 
-                # Combine everything so the AI has the exact keys it was trained to look for
+                # Format the metrics so the AI understands the percentages
+                upside_raw = rev_metrics.get('Upside_to_Mean', 0)
+                upside_str = f"{upside_raw:.1%}" if upside_raw else "0.0%"
+                div_raw = val_metrics.get('Dividend_Yield', 0)
+                div_str = f"{div_raw:.1%}" if div_raw else "0.0%"
+                
+                # Combine everything with explicit mathematical trigger flags
                 tech_fund_data = {
                     "Price": tech.get('Current_Price', 0),
                     "RSI": tech.get('RSI_14', 50),
                     "ROE": f"{funds.get('ROE', 0):.1%}",
-                    "FCF_Yield": f"{funds.get('FCF_Yield', 0):.1%}", # Explicitly formats FCF!
+                    "FCF_Yield": f"{funds.get('FCF_Yield', 0):.1%}",
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
                     "EV_EBITDA": funds.get('EV_EBITDA', 0),
+                    
+                    # Engine A: Momentum
                     "Smooth_Score": mom_metrics.get('Smooth_Score', 0),
-                    "Upside_to_Mean": rev_metrics.get('Upside_to_Mean', 0),
+                    
+                    # Engine B: Mean Reversion
+                    "Upside_to_Mean": upside_str,
                     "Lower_BB": rev_metrics.get('Lower_BB', 0),
+                    "Is_Oversold_Setup": rev_metrics.get('Is_Oversold_Setup', False), # Crucial for the AI
+                    
+                    # Engine C: Deep Value
                     "Value_Score": val_metrics.get('Value_Score', 0),
-                    "Dividend_Yield": val_metrics.get('Dividend_Yield', 0)
+                    "Dividend_Yield": div_str
                 }
                 
                 # Fetch current regime
