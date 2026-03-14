@@ -530,7 +530,10 @@ with tab_radar:
             
             def fetch_quant(t):
                 sector_etf = data_client.get_sector_for_ticker(t)
-                sector_regime = data_client.get_regime(sector_etf)
+                
+                # --- THE FIX: Use the upgraded get_market_regime function ---
+                sector_regime = data_client.get_market_regime(sector_etf)
+                
                 metrics = data_client.get_smart_momentum(t)
                 if not metrics: return None
                 
@@ -539,7 +542,8 @@ with tab_radar:
 
                 return {
                     'Ticker': t, 'Sector': sector_etf,
-                    'Sector Health': sector_regime['status'] if sector_regime else "Unknown",
+                    # Grab 'regime' instead of the old 'status' key
+                    'Sector Health': sector_regime['regime'] if sector_regime else "Unknown",
                     'Price': metrics['Current_Price'], 'Smooth_Score': metrics['Smooth_Score'],
                     **tech
                 }
