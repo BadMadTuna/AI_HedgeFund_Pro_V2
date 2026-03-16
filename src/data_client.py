@@ -1,235 +1,96 @@
-import os
 import requests
 import pandas as pd
-import yfinance as yf
 import numpy as np
-import time
+import yfinance as yf
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+import os
+import time
+import streamlit as st
 
 class MarketDataClient:
-    # 1. Sector Map defined as a class-level constant
-    SECTOR_MAP = {
-        'XLK': ['AAPL', 'MSFT', 'NVDA', 'AVGO', 'ORCL', 'ADBE', 'CRM', 'AMD', 'QCOM', 'TXN', 'INTC', 'MU', 'LRCX', 'ADI', 'AMAT', 'KLAC'],
-        'XLY': ['AMZN', 'TSLA', 'HD', 'MCD', 'NKE', 'LOW', 'SBUX', 'BKNG', 'TJX', 'ORLY', 'MAR', 'F', 'GM', 'DG', 'EBAY'],
-        'XLF': ['BRK-B', 'JPM', 'V', 'MA', 'BAC', 'WFC', 'GS', 'MS', 'AXP', 'BLK', 'C', 'CB', 'PGR', 'SCHW'],
-        'XLE': ['XOM', 'CVX', 'COP', 'SLB', 'EOG', 'MPC', 'PSX', 'VLO', 'HAL', 'DVN', 'HES', 'OXY'],
-        'XLV': ['LLY', 'UNH', 'JNJ', 'ABBV', 'MRK', 'TMO', 'ABT', 'PFE', 'DHR', 'AMGN', 'ISRG', 'BMY', 'MRNA', 'GILD'],
-        'XLI': ['GE', 'CAT', 'UNP', 'HON', 'RTX', 'LMT', 'DE', 'BA', 'UPS', 'MMM', 'HII', 'PCAR', 'FEDEX', 'GEV'],
-        'XLP': ['PG', 'KO', 'PEP', 'COST', 'WMT', 'PM', 'EL', 'MO', 'CL', 'KMB', 'STZ', 'SYY'],
-        'XLB': ['LIN', 'SHW', 'APD', 'FCX', 'NEM', 'ECL', 'ALB', 'DOW', 'CTVA'],
-        'XLC': ['GOOGL', 'GOOG', 'META', 'NFLX', 'DIS', 'TMUS', 'VZ', 'T', 'CHTR', 'WBD'],
-        'XLU': ['NEE', 'SO', 'DUK', 'AEP', 'D', 'EXC', 'PCG', 'SRE', 'ED'],
-        'XLRE': ['PLD', 'AMT', 'EQIX', 'CCI', 'PSA', 'O', 'SBAC', 'WELL']
-    }
-
     def __init__(self):
         self.api_key = os.getenv("TIINGO_API_KEY")
-        if not self.api_key:
-            raise ValueError("⚠️ TIINGO_API_KEY not found in .env file.")
+        self.headers = {'Content-Type': 'application/json'}
         
-        self.headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Token {self.api_key}'
-        }
-
-    def get_technicals(self, ticker: str) -> dict:
-        """Fetches 1 year of daily prices from Tiingo and calculates TA metrics."""
-        try:
-            start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices?startDate={start_date}"
-            
-            response = requests.get(url, headers=self.headers)
-            if response.status_code != 200:
-                return None
-                
-            data = response.json()
-            if not data: return None
-
-            df = pd.DataFrame(data)
-            df['date'] = pd.to_datetime(df['date'])
-            df.sort_values('date', inplace=True)
-
-            df['SMA_50'] = df['close'].rolling(window=50).mean()
-            df['SMA_200'] = df['close'].rolling(window=200).mean()
-
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-            loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-            rs = gain / loss
-            df['RSI'] = 100 - (100 / (1 + rs))
-
-            latest = df.iloc[-1]
-            return {
-                "Ticker": ticker,
-                "Price": round(latest['close'], 2),
-                "SMA_50": round(latest['SMA_50'], 2) if not pd.isna(latest['SMA_50']) else 0,
-                "SMA_200": round(latest['SMA_200'], 2) if not pd.isna(latest['SMA_200']) else 0,
-                "RSI": round(latest['RSI'], 1) if not pd.isna(latest['RSI']) else 50,
-                "Volume": int(latest['volume'])
-            }
-        except Exception:
-            return None
-
-    def get_market_regime(self, ticker='SPY'):
+    # ==========================================
+    # LAYER 1: THE BRAIN (DUAL-HYSTERESIS)
+    # ==========================================
+    def get_market_regime(self, ticker="SPY") -> dict:
         """
-        Advanced Layer 1: Trend-Volatility Matrix Classifier.
-        Evaluates Trend (Moving Averages) and Realized Volatility to classify the market state.
+        Calculates the Macro Regime using Dual-Hysteresis 
+        to perfectly prevent both Trend and Volatility whipsaws.
         """
         try:
-            # Fetch 1 year of data to calculate long-term baselines
+            # 1. Fetch 1 year of data
             hist = yf.Ticker(ticker).history(period="1y")
-            if hist.empty:
-                return None
-
+            if hist.empty: return None
+            
             close_prices = hist['Close']
-            
-            # 1. Calculate Trend (Fast vs Slow SMA Crossover is more robust than just Price vs SMA)
-            sma_50 = close_prices.rolling(window=50).mean().iloc[-1]
-            sma_200 = close_prices.rolling(window=200).mean().iloc[-1]
             current_price = close_prices.iloc[-1]
+            sma_200 = close_prices.rolling(window=200).mean().iloc[-1]
+            sma_50 = close_prices.rolling(window=50).mean().iloc[-1]
             
-            # Is the structural trend up or down?
-            is_uptrend = sma_50 > sma_200 and current_price > sma_200
-
-            # 2. Calculate Realized Volatility (Rolling 20-day annualized std dev)
-            daily_returns = close_prices.pct_change()
-            rolling_vol = daily_returns.rolling(window=20).std() * np.sqrt(252)
+            # 2. Calculate Volatility
+            daily_returns = close_prices.pct_change().dropna()
+            current_vol = daily_returns.tail(20).std() * np.sqrt(252) * 100
+            baseline_vol = daily_returns.std() * np.sqrt(252) * 100
             
-            current_vol = rolling_vol.iloc[-1]
-            # Calculate the median volatility over the last year to establish a "normal" baseline
-            baseline_vol = rolling_vol.median() 
+            # ==========================================
+            # DUAL-HYSTERESIS LOGIC
+            # ==========================================
             
-            is_high_vol = current_vol > baseline_vol
+            # Fetch the previous states from memory (default to safe/bearish if no memory)
+            last_trend = st.session_state.get('last_trend', 'BEAR')
+            last_vol_state = st.session_state.get('last_vol_state', 'VOLATILE')
 
-            # 3. Classify the Regime
-            if is_uptrend and not is_high_vol:
-                regime = "QUIET_BULL"
-                action = "Aggressive Trend/Momentum"
-            elif is_uptrend and is_high_vol:
-                regime = "VOLATILE_BULL"
-                action = "Reduce Size, Blend Momentum with Mean Reversion"
-            elif not is_uptrend and not is_high_vol:
-                regime = "QUIET_BEAR"
-                action = "Defensive Value, High Yield, Cash"
-            else: # not is_uptrend and is_high_vol
-                regime = "VOLATILE_BEAR"
-                action = "Maximum Cash, Trade Extreme Oversold Bounces Only"
+            # --- TREND HYSTERESIS (1.5% Buffer) ---
+            trend_upper_band = sma_200 * 1.015
+            trend_lower_band = sma_200 * 0.985
+            
+            if current_price > trend_upper_band: current_trend = 'BULL'
+            elif current_price < trend_lower_band: current_trend = 'BEAR'
+            else: current_trend = last_trend # Stuck in the dead zone, keep previous state
 
+            # --- VOLATILITY HYSTERESIS (1.0% Buffer) ---
+            vol_upper_band = baseline_vol + 1.0
+            vol_lower_band = baseline_vol - 1.0
+            
+            if current_vol > vol_upper_band: current_vol_state = 'VOLATILE'
+            elif current_vol < vol_lower_band: current_vol_state = 'QUIET'
+            else: current_vol_state = last_vol_state # Stuck in the dead zone, keep previous state
+            
+            # Save the confirmed states back to memory for tomorrow
+            st.session_state.last_trend = current_trend
+            st.session_state.last_vol_state = current_vol_state
+            
+            # 3. Combine into the Final Regime
+            regime_name = f"{current_vol_state}_{current_trend}"
+
+            # 4. Map the Directive
+            directives = {
+                "QUIET_BULL": "Aggressive Trend/Momentum",
+                "VOLATILE_BULL": "Mean Reversion / Profit Taking",
+                "QUIET_BEAR": "Deep Value / Dividend Yield",
+                "VOLATILE_BEAR": "Maximum Defense / Cash Preservation"
+            }
+            
             return {
-                'regime': regime,
-                'recommended_action': action,
+                'regime': regime_name,
+                'recommended_action': directives.get(regime_name, "Unknown"),
                 'metrics': {
                     'current_price': round(current_price, 2),
                     'sma_50': round(sma_50, 2),
                     'sma_200': round(sma_200, 2),
-                    'current_volatility': round(current_vol * 100, 2), # As percentage
-                    'baseline_volatility': round(baseline_vol * 100, 2)
+                    'current_volatility': round(current_vol, 2),
+                    'baseline_volatility': round(baseline_vol, 2)
                 }
             }
         except Exception as e:
-            print(f"Regime Engine Error: {e}")
             return None
 
-    def get_sector_for_ticker(self, ticker):
-        """Finds which XL-ETF a ticker belongs to."""
-        for sector_etf, members in self.SECTOR_MAP.items():
-            if ticker in members:
-                return sector_etf
-        return 'SPY' 
-
-    def get_smart_momentum(self, ticker):
-        """Calculates Volatility-Adjusted 12-minus-1 Momentum."""
-        try:
-            end_date = datetime.today()
-            start_date = end_date - timedelta(days=380)
-            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-            params = {'startDate': start_date.strftime('%Y-%m-%d'), 'token': self.api_key}
-            
-            response = requests.get(url, params=params)
-            data = response.json()
-            if len(data) < 252: return None 
-                
-            df = pd.DataFrame(data)
-            df['close'] = df['close'].astype(float)
-            
-            daily_returns = df['close'].pct_change()
-            annual_volatility = daily_returns.std() * np.sqrt(252)
-            
-            price_t_21 = df['close'].iloc[-21]
-            price_t_252 = df['close'].iloc[-252]
-            momentum_12m_1m = (price_t_21 - price_t_252) / price_t_252
-            
-            smooth_score = momentum_12m_1m / annual_volatility if annual_volatility != 0 else 0
-                
-            return {
-                'Current_Price': df['close'].iloc[-1],
-                'Momentum_12m_1m': round(momentum_12m_1m, 4),
-                'Annual_Volatility': round(annual_volatility, 4),
-                'Smooth_Score': round(smooth_score, 4)
-            }
-        except Exception:
-            return None
-
-    def get_atr_and_sizing(self, ticker, account_value, risk_pct=0.01):
-        """Calculates 14-day ATR and recommended position size."""
-        try:
-            end_date = datetime.today()
-            start_date = end_date - timedelta(days=40)
-            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-            params = {'startDate': start_date.strftime('%Y-%m-%d'), 'token': self.api_key}
-            
-            response = requests.get(url, params=params)
-            data = response.json()
-            if len(data) < 15: return None
-                
-            df = pd.DataFrame(data)
-            df['prev_close'] = df['close'].shift(1)
-            df['tr1'] = df['high'] - df['low']
-            df['tr2'] = abs(df['high'] - df['prev_close'])
-            df['tr3'] = abs(df['low'] - df['prev_close'])
-            df['true_range'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-            
-            atr = df['true_range'].rolling(window=14).mean().iloc[-1]
-            current_price = df['close'].iloc[-1]
-            
-            stop_distance = 2 * atr
-            stop_price = current_price - stop_distance
-            max_loss_dollars = account_value * risk_pct
-            shares_to_buy = int(max_loss_dollars / stop_distance) if stop_distance > 0 else 0
-                
-            return {
-                'Current_Price': round(current_price, 2),
-                'ATR': round(atr, 2),
-                'Stop_Loss': round(stop_price, 2),
-                'Shares': shares_to_buy,
-                'Total_Investment': round(shares_to_buy * current_price, 2),
-                'Max_Loss_Risk': round(max_loss_dollars, 2)
-            }
-        except Exception:
-            return None
-
-    def get_news(self, ticker: str) -> str:
-        """Fetches the latest 5 news headlines from Tiingo."""
-        try:
-            url = f"https://api.tiingo.com/tiingo/news?tickers={ticker}&limit=5"
-            response = requests.get(url, headers=self.headers)
-            articles = response.json()
-            if not articles: return "No recent news."
-
-            headlines = []
-            for article in articles:
-                title = article.get('title', 'No Title')
-                source = article.get('source', 'Unknown')
-                pub_date = article.get('publishedDate', '')[:10]
-                headlines.append(f"- [{pub_date}] {title} ({source})")
-            return "\n".join(headlines)
-        except Exception:
-            return "Error fetching news."
-        
+    # ==========================================
+    # FUNDAMENTALS & CACHING
+    # ==========================================
     def get_fundamentals(self, ticker: str) -> dict:
         """Fetches fundamental data with a 12-hour Time-to-Live (TTL) cache."""
         
@@ -279,83 +140,109 @@ class MarketDataClient:
         except Exception:
             return {'ROE': 0, 'Gross_Margin': 0, 'EV_EBITDA': 0, 'FCF_Yield': 0}
 
-    def get_earnings_date(self, ticker: str) -> str:
-        """Fallback to yfinance to grab the upcoming earnings date."""
+    # ==========================================
+    # GENERAL TECHNICALS
+    # ==========================================
+    def get_technicals(self, ticker: str) -> dict:
         try:
-            t = yf.Ticker(ticker)
-            cal = t.calendar
-            if cal is None or 'Earnings Date' not in cal or not cal['Earnings Date']:
-                return "Safe (No Data)"
-
-            reported_date = pd.to_datetime(cal['Earnings Date'][0]).date()
-            today = datetime.now().date()
-            if reported_date >= today:
-                days_until = (reported_date - today).days
-                return f"⚠️ EARNINGS IN {days_until} DAYS" if days_until <= 7 else f"Safe (Earnings in {days_until} days)"
-            return "Safe (Awaiting next quarter date)"
-        except Exception:
-            return "Safe (Data Error)"
-        
-    def get_mean_reversion_metrics(self, ticker):
-        """
-        Layer 2 (Engine B): Mean Reversion Calculator.
-        Finds extreme oversold conditions in choppy/volatile regimes using Bollinger Bands.
-        """
-        try:
-            # We need ~60 days to calculate a clean 20-day moving average and standard deviation
-            end_date = datetime.today()
-            start_date = end_date - timedelta(days=90)
-            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-            params = {'startDate': start_date.strftime('%Y-%m-%d'), 'token': self.api_key}
+            hist = yf.Ticker(ticker).history(period="3mo")
+            if hist.empty: return None
             
-            response = requests.get(url, params=params)
-            data = response.json()
-            if len(data) < 25: return None
-                
-            df = pd.DataFrame(data)
-            df['close'] = df['close'].astype(float)
+            close = hist['Close']
+            current_price = close.iloc[-1]
             
-            # 1. Calculate Bollinger Bands (20-day SMA, 2 Standard Deviations)
-            df['SMA_20'] = df['close'].rolling(window=20).mean()
-            df['STD_20'] = df['close'].rolling(window=20).std()
-            df['Lower_BB'] = df['SMA_20'] - (2 * df['STD_20'])
-            
-            # 2. Calculate 14-day RSI
-            delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-            loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+            # Basic RSI
+            delta = close.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
-            df['RSI'] = 100 - (100 / (1 + rs))
+            rsi = 100 - (100 / (1 + rs.iloc[-1])) if loss.iloc[-1] != 0 else 50
             
-            current_price = df['close'].iloc[-1]
-            lower_bb = df['Lower_BB'].iloc[-1]
-            rsi = df['RSI'].iloc[-1]
+            return {
+                'Current_Price': round(current_price, 2),
+                'Price': round(current_price, 2), # Fallback key
+                'RSI_14': round(rsi, 2),
+                'RSI': round(rsi, 2) # Fallback key
+            }
+        except Exception:
+            return None
+
+    # ==========================================
+    # ENGINE A: MOMENTUM (QUIET BULL)
+    # ==========================================
+    def get_smart_momentum(self, ticker: str) -> dict:
+        """Calculates trend smoothness and raw momentum."""
+        try:
+            hist = yf.Ticker(ticker).history(period="6mo")
+            if len(hist) < 50: return None
             
-            # 3. The Mean Reversion Trigger
-            # Is the price within 1% of the lower band (or below it) AND RSI extremely low?
-            is_oversold = current_price <= (lower_bb * 1.01) and rsi < 35.0
+            close = hist['Close']
+            current_price = close.iloc[-1]
             
-            # Calculate how far we are from the "Mean" (the 20-day SMA) for potential profit target
-            sma_20 = df['SMA_20'].iloc[-1]
-            upside_to_mean = (sma_20 - current_price) / current_price
+            # 1. Raw Return
+            six_mo_return = (current_price - close.iloc[0]) / close.iloc[0]
+            
+            # 2. Path Smoothness (R-Squared of price vs time)
+            x = np.arange(len(close))
+            y = close.values
+            slope, intercept = np.polyfit(x, y, 1)
+            y_pred = slope * x + intercept
+            ss_res = np.sum((y - y_pred)**2)
+            ss_tot = np.sum((y - np.mean(y))**2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+            
+            # 3. Smooth Score (Return * Smoothness)
+            smooth_score = six_mo_return * r_squared
             
             return {
                 'Ticker': ticker,
                 'Current_Price': round(current_price, 2),
+                '6m_Return': round(six_mo_return, 4),
+                'Trend_Smoothness': round(r_squared, 4),
+                'Smooth_Score': round(smooth_score, 4)
+            }
+        except Exception:
+            return None
+
+    # ==========================================
+    # ENGINE B: MEAN REVERSION (VOLATILE REGIMES)
+    # ==========================================
+    def get_mean_reversion_metrics(self, ticker: str) -> dict:
+        """Hunts for statistically oversold conditions below the Bollinger Band."""
+        try:
+            hist = yf.Ticker(ticker).history(period="3mo")
+            if len(hist) < 20: return None
+            
+            close = hist['Close']
+            current_price = close.iloc[-1]
+            
+            # Bollinger Bands (20-day, 2 Standard Deviations)
+            sma_20 = close.rolling(window=20).mean().iloc[-1]
+            std_20 = close.rolling(window=20).std().iloc[-1]
+            lower_bb = sma_20 - (2 * std_20)
+            
+            # Upside to Mean (How far is it from its 20-day baseline?)
+            upside_to_mean = (sma_20 - current_price) / current_price if current_price < sma_20 else 0
+            
+            # Oversold Logic
+            is_oversold = current_price < lower_bb
+            
+            return {
+                'Ticker': ticker,
+                'Current_Price': round(current_price, 2),
+                'SMA_20': round(sma_20, 2),
                 'Lower_BB': round(lower_bb, 2),
-                'RSI': round(rsi, 1),
                 'Upside_to_Mean': round(upside_to_mean, 4),
                 'Is_Oversold_Setup': is_oversold
             }
-        except Exception as e:
+        except Exception:
             return None
-        
+
+    # ==========================================
+    # ENGINE C: DEEP VALUE (QUIET BEAR)
+    # ==========================================
     def get_deep_value_metrics(self, ticker: str) -> dict:
-        """
-        Layer 2 (Engine C): Deep Value & Yield Calculator.
-        Hunts for dividend yield, low multiples, and low debt in Quiet Bear regimes.
-        """
-        import yfinance as yf
+        """Hunts for dividend yield, low multiples, and low debt in Quiet Bear regimes."""
         try:
             info = yf.Ticker(ticker).info
             
@@ -364,10 +251,9 @@ class MarketDataClient:
             if div_yield is None: div_yield = 0
                 
             # 2. Valuation Multiples
-            ev_ebitda = info.get('enterpriseToEbitda', 99) # Default high if missing
-            price_to_book = info.get('priceToBook', 99)
+            ev_ebitda = info.get('enterpriseToEbitda', 99) 
             
-            # 3. Balance Sheet Safety (Crucial for Bear Markets)
+            # 3. Balance Sheet Safety
             debt_to_equity = info.get('debtToEquity', 999) 
             
             # 4. Free Cash Flow
@@ -375,14 +261,12 @@ class MarketDataClient:
             market_cap = info.get('marketCap', 1)
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
             
-            # 5. Build the Value Score (Higher is better)
-            # Reward high yield and FCF, penalize high debt and high multiples
+            # 5. Build the Value Score
             score = (div_yield * 200) + (fcf_yield * 100)
             
             if ev_ebitda < 10: score += 20
             elif ev_ebitda > 20: score -= 30
-                
-            if debt_to_equity < 50: score += 20 # Low debt is a premium in a bear market
+            if debt_to_equity < 50: score += 20 
             
             current_price = info.get('currentPrice', info.get('previousClose', 0))
             
@@ -395,5 +279,99 @@ class MarketDataClient:
                 'FCF_Yield': round(fcf_yield, 4),
                 'Value_Score': round(score, 2)
             }
-        except Exception as e:
+        except Exception:
             return None
+
+    # ==========================================
+    # RISK MANAGEMENT (ATR SIZING)
+    # ==========================================
+    def get_atr_and_sizing(self, ticker: str, account_value: float = 100000.0, risk_pct: float = 0.01) -> dict:
+        """Calculates position size using the 14-day Average True Range (ATR)."""
+        try:
+            hist = yf.Ticker(ticker).history(period="1mo")
+            if len(hist) < 15: return None
+            
+            high_low = hist['High'] - hist['Low']
+            high_close = np.abs(hist['High'] - hist['Close'].shift())
+            low_close = np.abs(hist['Low'] - hist['Close'].shift())
+            
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = np.max(ranges, axis=1)
+            atr_14 = true_range.rolling(14).mean().iloc[-1]
+            
+            current_price = hist['Close'].iloc[-1]
+            
+            # Risk Math
+            risk_amount = account_value * risk_pct
+            stop_distance = atr_14 * 2 # 2x ATR Stop Loss
+            shares = int(risk_amount / stop_distance)
+            
+            return {
+                'Current_Price': current_price,
+                'ATR_14': atr_14,
+                'Stop_Distance': stop_distance,
+                'Stop_Loss': current_price - stop_distance,
+                'Shares': shares,
+                'Total_Investment': shares * current_price,
+                'Max_Loss_Risk': shares * stop_distance
+            }
+        except Exception:
+            return None
+
+    # ==========================================
+    # HELPERS
+    # ==========================================
+    def get_sector_for_ticker(self, ticker: str) -> str:
+        """Maps an S&P 500 stock to its parent sector ETF for relative strength checks."""
+        try:
+            info = yf.Ticker(ticker).info
+            sector = info.get('sector', 'Unknown')
+            
+            mapping = {
+                'Technology': 'XLK', 'Healthcare': 'XLV', 'Financial Services': 'XLF',
+                'Consumer Cyclical': 'XLY', 'Consumer Defensive': 'XLP', 'Energy': 'XLE',
+                'Utilities': 'XLU', 'Industrials': 'XLI', 'Basic Materials': 'XLB',
+                'Real Estate': 'XLRE', 'Communication Services': 'XLC'
+            }
+            return mapping.get(sector, 'SPY')
+        except:
+            return 'SPY'
+
+    def get_news(self, ticker: str) -> str:
+        """Fetches latest news from Tiingo."""
+        if not self.api_key: return "No News API Key provided."
+        try:
+            url = "https://api.tiingo.com/tiingo/news"
+            params = {'tickers': ticker, 'limit': 3, 'token': self.api_key}
+            res = requests.get(url, params=params)
+            
+            if res.status_code == 200:
+                articles = res.json()
+                if articles:
+                    return "\n".join([f"- {a['title']}" for a in articles])
+            return "No recent major news."
+        except:
+            return "Failed to fetch news."
+
+    def get_earnings_date(self, ticker: str) -> str:
+        """Returns the next earnings date."""
+        try:
+            t = yf.Ticker(ticker)
+            calendar = t.calendar
+            if calendar is not None and not calendar.empty:
+                # Format depends on yfinance version, usually dict or dataframe
+                if isinstance(calendar, dict) and 'Earnings Date' in calendar:
+                    dates = calendar['Earnings Date']
+                    if len(dates) > 0:
+                        next_date = dates[0]
+                        if isinstance(next_date, datetime):
+                            days_away = (next_date.replace(tzinfo=None) - datetime.now()).days
+                        else:
+                            return f"Next Earnings: {next_date}"
+                            
+                        if days_away < 0: return "Earnings recently passed."
+                        if days_away < 7: return f"⚠️ EARNINGS IN {days_away} DAYS"
+                        return f"Safe (Earnings in {days_away} days)"
+            return "Unknown"
+        except:
+            return "Unknown"
