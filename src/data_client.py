@@ -35,7 +35,8 @@ class MarketDataClient:
         if 'mdc_caches' not in st.session_state:
             st.session_state.mdc_caches = {
                 'regime': {}, 'fund': {}, 'tech': {}, 
-                'mom': {}, 'rev': {}, 'val': {}, 'sector': {}
+                'mom': {}, 'rev': {}, 'val': {}, 'sector': {},
+                'news': {}  # <--- JUST ADD THIS KEY HERE
             }
         self.caches = st.session_state.mdc_caches
 
