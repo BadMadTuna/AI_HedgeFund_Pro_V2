@@ -1,32 +1,94 @@
+import os
 import requests
 import pandas as pd
-import numpy as np
 import yfinance as yf
-from datetime import datetime, timedelta
-import os
+import numpy as np
 import time
+from datetime import datetime, timedelta
 import streamlit as st
 from dotenv import load_dotenv
 
-# Load the .env file so os.getenv actually finds your API key
+# Load environment variables
 load_dotenv()
 
 class MarketDataClient:
+    # 1. Sector Map defined as a class-level constant to prevent 500+ YF API calls
+    SECTOR_MAP = {
+        'XLK': ['AAPL', 'MSFT', 'NVDA', 'AVGO', 'ORCL', 'ADBE', 'CRM', 'AMD', 'QCOM', 'TXN', 'INTC', 'MU', 'LRCX', 'ADI', 'AMAT', 'KLAC'],
+        'XLY': ['AMZN', 'TSLA', 'HD', 'MCD', 'NKE', 'LOW', 'SBUX', 'BKNG', 'TJX', 'ORLY', 'MAR', 'F', 'GM', 'DG', 'EBAY'],
+        'XLF': ['BRK-B', 'JPM', 'V', 'MA', 'BAC', 'WFC', 'GS', 'MS', 'AXP', 'BLK', 'C', 'CB', 'PGR', 'SCHW'],
+        'XLE': ['XOM', 'CVX', 'COP', 'SLB', 'EOG', 'MPC', 'PSX', 'VLO', 'HAL', 'DVN', 'HES', 'OXY'],
+        'XLV': ['LLY', 'UNH', 'JNJ', 'ABBV', 'MRK', 'TMO', 'ABT', 'PFE', 'DHR', 'AMGN', 'ISRG', 'SYK', 'VRTX', 'BMY', 'CVS'],
+        'XLC': ['GOOGL', 'GOOG', 'META', 'NFLX', 'DIS', 'CMCSA', 'TMUS', 'VZ', 'T', 'CHTR', 'EA', 'TTWO'],
+        'XLI': ['CAT', 'GE', 'UNP', 'BA', 'RTX', 'HON', 'UPS', 'LMT', 'DE', 'ADP', 'CSX', 'MMM', 'NSC', 'FDX', 'ETN'],
+        'XLP': ['PG', 'COST', 'WMT', 'PEP', 'KO', 'PM', 'MO', 'TGT', 'CL', 'KMB', 'MDLZ', 'SYY', 'EL', 'GIS'],
+        'XLU': ['NEE', 'SO', 'DUK', 'SRE', 'AEP', 'D', 'EXC', 'XEL', 'ED', 'PCG', 'PEG', 'WEC', 'EIX'],
+        'XLRE': ['PLD', 'AMT', 'EQIX', 'CCI', 'PSA', 'O', 'SPG', 'WELL', 'DLR', 'AVB', 'EQR', 'VTR'],
+        'XLB': ['LIN', 'SHW', 'APD', 'ECL', 'NEM', 'FCX', 'DD', 'DOW', 'CTVA', 'NUE', 'VMC', 'MLM', 'ALB']
+    }
+
     def __init__(self):
         self.api_key = os.getenv("TIINGO_API_KEY")
         self.headers = {'Content-Type': 'application/json'}
         
+        # Initialize Universal Memory Banks
+        if 'mdc_caches' not in st.session_state:
+            st.session_state.mdc_caches = {
+                'regime': {}, 'fund': {}, 'tech': {}, 
+                'mom': {}, 'rev': {}, 'val': {}, 'sector': {}
+            }
+        self.caches = st.session_state.mdc_caches
+
+    # ==========================================
+    # ROBUST RETRY WRAPPERS (Prevents YF Dropouts)
+    # ==========================================
+    def _get_history_with_retry(self, ticker: str, period: str, retries=3):
+        """Fetches YF history with exponential backoff to bypass rate limits."""
+        for attempt in range(retries):
+            try:
+                hist = yf.Ticker(ticker).history(period=period)
+                if not hist.empty:
+                    return hist
+            except Exception:
+                pass
+            time.sleep(0.3 * (attempt + 1)) # Sleep and try again
+        return pd.DataFrame()
+
+    def _get_info_with_retry(self, ticker: str, retries=3):
+        """Fetches YF fundamental info with backoff."""
+        for attempt in range(retries):
+            try:
+                info = yf.Ticker(ticker).info
+                if info and ('returnOnEquity' in info or 'marketCap' in info):
+                    return info
+            except Exception:
+                pass
+            time.sleep(0.3 * (attempt + 1))
+        return {}
+
+    # ==========================================
+    # UNIVERSAL CACHE MANAGER
+    # ==========================================
+    def _check_cache(self, cache_name: str, key: str, ttl_seconds: int = 3600):
+        if key in self.caches[cache_name]:
+            data, timestamp = self.caches[cache_name][key]
+            if time.time() - timestamp < ttl_seconds:
+                return data
+        return None
+
+    def _save_cache(self, cache_name: str, key: str, data):
+        if data is not None:
+            self.caches[cache_name][key] = (data, time.time())
+
     # ==========================================
     # LAYER 1: THE BRAIN (DUAL-HYSTERESIS)
     # ==========================================
     def get_market_regime(self, ticker="SPY") -> dict:
-        """
-        Calculates the Macro Regime using Dual-Hysteresis 
-        to perfectly prevent both Trend and Volatility whipsaws.
-        """
+        cached = self._check_cache('regime', ticker, ttl_seconds=3600)
+        if cached: return cached
+
         try:
-            # 1. Fetch 1 year of data
-            hist = yf.Ticker(ticker).history(period="1y")
+            hist = self._get_history_with_retry(ticker, "1y")
             if hist.empty: return None
             
             close_prices = hist['Close']
@@ -34,43 +96,29 @@ class MarketDataClient:
             sma_200 = close_prices.rolling(window=200).mean().iloc[-1]
             sma_50 = close_prices.rolling(window=50).mean().iloc[-1]
             
-            # 2. Calculate Volatility
             daily_returns = close_prices.pct_change().dropna()
             current_vol = daily_returns.tail(20).std() * np.sqrt(252) * 100
             baseline_vol = daily_returns.std() * np.sqrt(252) * 100
             
-            # ==========================================
-            # DUAL-HYSTERESIS LOGIC
-            # ==========================================
-            
-            # Fetch the previous states from memory (default to safe/bearish if no memory)
             last_trend = st.session_state.get('last_trend', 'BEAR')
             last_vol_state = st.session_state.get('last_vol_state', 'VOLATILE')
 
-            # --- TREND HYSTERESIS (1.5% Buffer) ---
             trend_upper_band = sma_200 * 1.015
             trend_lower_band = sma_200 * 0.985
-            
             if current_price > trend_upper_band: current_trend = 'BULL'
             elif current_price < trend_lower_band: current_trend = 'BEAR'
-            else: current_trend = last_trend # Stuck in the dead zone, keep previous state
+            else: current_trend = last_trend 
 
-            # --- VOLATILITY HYSTERESIS (1.0% Buffer) ---
             vol_upper_band = baseline_vol + 1.0
             vol_lower_band = baseline_vol - 1.0
-            
             if current_vol > vol_upper_band: current_vol_state = 'VOLATILE'
             elif current_vol < vol_lower_band: current_vol_state = 'QUIET'
-            else: current_vol_state = last_vol_state # Stuck in the dead zone, keep previous state
+            else: current_vol_state = last_vol_state 
             
-            # Save the confirmed states back to memory for tomorrow
             st.session_state.last_trend = current_trend
             st.session_state.last_vol_state = current_vol_state
             
-            # 3. Combine into the Final Regime
             regime_name = f"{current_vol_state}_{current_trend}"
-
-            # 4. Map the Directive
             directives = {
                 "QUIET_BULL": "Aggressive Trend/Momentum",
                 "VOLATILE_BULL": "Mean Reversion / Profit Taking",
@@ -78,7 +126,7 @@ class MarketDataClient:
                 "VOLATILE_BEAR": "Maximum Defense / Cash Preservation"
             }
             
-            return {
+            result = {
                 'regime': regime_name,
                 'recommended_action': directives.get(regime_name, "Unknown"),
                 'metrics': {
@@ -89,43 +137,27 @@ class MarketDataClient:
                     'baseline_volatility': round(baseline_vol, 2)
                 }
             }
-        except Exception as e:
+            self._save_cache('regime', ticker, result)
+            return result
+        except Exception:
             return None
 
     # ==========================================
-    # FUNDAMENTALS & CACHING
+    # FUNDAMENTALS
     # ==========================================
     def get_fundamentals(self, ticker: str) -> dict:
-        """Fetches fundamental data with a 12-hour Time-to-Live (TTL) cache."""
-        
-        # 1. Initialize cache if it doesn't exist
-        if not hasattr(self, 'fund_cache'):
-            self.fund_cache = {}
-            
-        # 2. Set Expiration: 12 hours (in seconds)
-        CACHE_TTL = 12 * 3600 
-        current_time = time.time()
-            
-        # 3. Check if we have valid, unexpired data
-        if ticker in self.fund_cache:
-            cached_data, timestamp = self.fund_cache[ticker]
-            
-            # If the data is younger than 12 hours, use it
-            if (current_time - timestamp) < CACHE_TTL:
-                return cached_data
-            else:
-                # The data is stale. Delete it so we fetch fresh data.
-                del self.fund_cache[ticker]
+        # 12-hour cache for fundamentals
+        cached = self._check_cache('fund', ticker, ttl_seconds=43200)
+        if cached: return cached
                 
         try:
-            info = yf.Ticker(ticker).info
+            info = self._get_info_with_retry(ticker)
             
             roe = info.get('returnOnEquity', 0)
             gross_margin = info.get('grossMargins', 0)
             ev_ebitda = info.get('enterpriseToEbitda', 0)
             fcf = info.get('freeCashflow', 0)
             market_cap = info.get('marketCap', 1)
-            
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
             
             result = {
@@ -135,12 +167,11 @@ class MarketDataClient:
                 'FCF_Yield': fcf_yield if fcf_yield else 0
             }
             
-            # 4. Save the successful result AND the current timestamp to memory
+            # Only cache if data isn't empty 0s
             if result['FCF_Yield'] != 0 or result['ROE'] != 0:
-                self.fund_cache[ticker] = (result, current_time)
+                self._save_cache('fund', ticker, result)
                 
             return result
-            
         except Exception:
             return {'ROE': 0, 'Gross_Margin': 0, 'EV_EBITDA': 0, 'FCF_Yield': 0}
 
@@ -148,26 +179,30 @@ class MarketDataClient:
     # GENERAL TECHNICALS
     # ==========================================
     def get_technicals(self, ticker: str) -> dict:
+        cached = self._check_cache('tech', ticker, ttl_seconds=3600)
+        if cached: return cached
+
         try:
-            hist = yf.Ticker(ticker).history(period="3mo")
+            hist = self._get_history_with_retry(ticker, "3mo")
             if hist.empty: return None
             
             close = hist['Close']
             current_price = close.iloc[-1]
             
-            # Basic RSI
             delta = close.diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs.iloc[-1])) if loss.iloc[-1] != 0 else 50
             
-            return {
+            result = {
                 'Current_Price': round(current_price, 2),
-                'Price': round(current_price, 2), # Fallback key
+                'Price': round(current_price, 2), 
                 'RSI_14': round(rsi, 2),
-                'RSI': round(rsi, 2) # Fallback key
+                'RSI': round(rsi, 2) 
             }
+            self._save_cache('tech', ticker, result)
+            return result
         except Exception:
             return None
 
@@ -175,18 +210,17 @@ class MarketDataClient:
     # ENGINE A: MOMENTUM (QUIET BULL)
     # ==========================================
     def get_smart_momentum(self, ticker: str) -> dict:
-        """Calculates trend smoothness and raw momentum."""
+        cached = self._check_cache('mom', ticker, ttl_seconds=3600)
+        if cached: return cached
+
         try:
-            hist = yf.Ticker(ticker).history(period="6mo")
+            hist = self._get_history_with_retry(ticker, "6mo")
             if len(hist) < 50: return None
             
             close = hist['Close']
             current_price = close.iloc[-1]
-            
-            # 1. Raw Return
             six_mo_return = (current_price - close.iloc[0]) / close.iloc[0]
             
-            # 2. Path Smoothness (R-Squared of price vs time)
             x = np.arange(len(close))
             y = close.values
             slope, intercept = np.polyfit(x, y, 1)
@@ -195,16 +229,17 @@ class MarketDataClient:
             ss_tot = np.sum((y - np.mean(y))**2)
             r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
             
-            # 3. Smooth Score (Return * Smoothness)
             smooth_score = six_mo_return * r_squared
             
-            return {
+            result = {
                 'Ticker': ticker,
                 'Current_Price': round(current_price, 2),
                 '6m_Return': round(six_mo_return, 4),
                 'Trend_Smoothness': round(r_squared, 4),
                 'Smooth_Score': round(smooth_score, 4)
             }
+            self._save_cache('mom', ticker, result)
+            return result
         except Exception:
             return None
 
@@ -212,26 +247,24 @@ class MarketDataClient:
     # ENGINE B: MEAN REVERSION (VOLATILE REGIMES)
     # ==========================================
     def get_mean_reversion_metrics(self, ticker: str) -> dict:
-        """Hunts for statistically oversold conditions below the Bollinger Band."""
+        cached = self._check_cache('rev', ticker, ttl_seconds=3600)
+        if cached: return cached
+
         try:
-            hist = yf.Ticker(ticker).history(period="3mo")
+            hist = self._get_history_with_retry(ticker, "3mo")
             if len(hist) < 20: return None
             
             close = hist['Close']
             current_price = close.iloc[-1]
             
-            # Bollinger Bands (20-day, 2 Standard Deviations)
             sma_20 = close.rolling(window=20).mean().iloc[-1]
             std_20 = close.rolling(window=20).std().iloc[-1]
             lower_bb = sma_20 - (2 * std_20)
             
-            # Upside to Mean (How far is it from its 20-day baseline?)
             upside_to_mean = (sma_20 - current_price) / current_price if current_price < sma_20 else 0
-            
-            # Oversold Logic
             is_oversold = current_price < lower_bb
             
-            return {
+            result = {
                 'Ticker': ticker,
                 'Current_Price': round(current_price, 2),
                 'SMA_20': round(sma_20, 2),
@@ -239,6 +272,8 @@ class MarketDataClient:
                 'Upside_to_Mean': round(upside_to_mean, 4),
                 'Is_Oversold_Setup': is_oversold
             }
+            self._save_cache('rev', ticker, result)
+            return result
         except Exception:
             return None
 
@@ -246,35 +281,29 @@ class MarketDataClient:
     # ENGINE C: DEEP VALUE (QUIET BEAR)
     # ==========================================
     def get_deep_value_metrics(self, ticker: str) -> dict:
-        """Hunts for dividend yield, low multiples, and low debt in Quiet Bear regimes."""
+        cached = self._check_cache('val', ticker, ttl_seconds=3600)
+        if cached: return cached
+
         try:
-            info = yf.Ticker(ticker).info
-            
-            # 1. Shareholder Yield (Dividends)
+            info = self._get_info_with_retry(ticker)
             div_yield = info.get('dividendYield', 0)
             if div_yield is None: div_yield = 0
                 
-            # 2. Valuation Multiples
             ev_ebitda = info.get('enterpriseToEbitda', 99) 
-            
-            # 3. Balance Sheet Safety
             debt_to_equity = info.get('debtToEquity', 999) 
             
-            # 4. Free Cash Flow
             fcf = info.get('freeCashflow', 0)
             market_cap = info.get('marketCap', 1)
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
             
-            # 5. Build the Value Score
             score = (div_yield * 200) + (fcf_yield * 100)
-            
             if ev_ebitda < 10: score += 20
             elif ev_ebitda > 20: score -= 30
             if debt_to_equity < 50: score += 20 
             
             current_price = info.get('currentPrice', info.get('previousClose', 0))
             
-            return {
+            result = {
                 'Ticker': ticker,
                 'Current_Price': round(current_price, 2),
                 'Dividend_Yield': round(div_yield, 4),
@@ -283,6 +312,8 @@ class MarketDataClient:
                 'FCF_Yield': round(fcf_yield, 4),
                 'Value_Score': round(score, 2)
             }
+            self._save_cache('val', ticker, result)
+            return result
         except Exception:
             return None
 
@@ -290,9 +321,8 @@ class MarketDataClient:
     # RISK MANAGEMENT (ATR SIZING)
     # ==========================================
     def get_atr_and_sizing(self, ticker: str, account_value: float = 100000.0, risk_pct: float = 0.01) -> dict:
-        """Calculates position size using the 14-day Average True Range (ATR)."""
         try:
-            hist = yf.Ticker(ticker).history(period="1mo")
+            hist = self._get_history_with_retry(ticker, "1mo")
             if len(hist) < 15: return None
             
             high_low = hist['High'] - hist['Low']
@@ -304,10 +334,8 @@ class MarketDataClient:
             atr_14 = true_range.rolling(14).mean().iloc[-1]
             
             current_price = hist['Close'].iloc[-1]
-            
-            # Risk Math
             risk_amount = account_value * risk_pct
-            stop_distance = atr_14 * 2 # 2x ATR Stop Loss
+            stop_distance = atr_14 * 2 
             shares = int(risk_amount / stop_distance)
             
             return {
@@ -326,23 +354,33 @@ class MarketDataClient:
     # HELPERS
     # ==========================================
     def get_sector_for_ticker(self, ticker: str) -> str:
-        """Maps an S&P 500 stock to its parent sector ETF for relative strength checks."""
+        """Uses static map to prevent 500 YF API calls."""
+        cached = self._check_cache('sector', ticker, ttl_seconds=86400)
+        if cached: return cached
+
+        # Look in our predefined map first
+        for etf, tickers in self.SECTOR_MAP.items():
+            if ticker in tickers:
+                self._save_cache('sector', ticker, etf)
+                return etf
+                
+        # Fallback to YF only if unknown
         try:
-            info = yf.Ticker(ticker).info
+            info = self._get_info_with_retry(ticker, retries=1)
             sector = info.get('sector', 'Unknown')
-            
             mapping = {
                 'Technology': 'XLK', 'Healthcare': 'XLV', 'Financial Services': 'XLF',
                 'Consumer Cyclical': 'XLY', 'Consumer Defensive': 'XLP', 'Energy': 'XLE',
                 'Utilities': 'XLU', 'Industrials': 'XLI', 'Basic Materials': 'XLB',
                 'Real Estate': 'XLRE', 'Communication Services': 'XLC'
             }
-            return mapping.get(sector, 'SPY')
+            mapped_sector = mapping.get(sector, 'SPY')
+            self._save_cache('sector', ticker, mapped_sector)
+            return mapped_sector
         except:
             return 'SPY'
 
     def get_news(self, ticker: str) -> str:
-        """Fetches latest news from Tiingo."""
         if not self.api_key: return "No News API Key provided."
         try:
             url = "https://api.tiingo.com/tiingo/news"
@@ -358,12 +396,10 @@ class MarketDataClient:
             return "Failed to fetch news."
 
     def get_earnings_date(self, ticker: str) -> str:
-        """Returns the next earnings date."""
         try:
             t = yf.Ticker(ticker)
             calendar = t.calendar
             if calendar is not None and not calendar.empty:
-                # Format depends on yfinance version, usually dict or dataframe
                 if isinstance(calendar, dict) and 'Earnings Date' in calendar:
                     dates = calendar['Earnings Date']
                     if len(dates) > 0:
