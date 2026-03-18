@@ -447,7 +447,10 @@ with tab_port:
                 # 1. Define worker function to accept regime as an argument
                 def run_guardian(row_data, macro_regime):
                     ticker = row_data['ticker']
-                    news = data_client.get_news(ticker)
+                    
+                    # THE FIX: Force the Guardian to fetch the live, un-cached news feed!
+                    news = data_client.get_news(ticker, bypass_cache=True) 
+                    
                     earn = data_client.get_earnings_date(ticker)
                     funds = data_client.get_fundamentals(ticker) 
                     

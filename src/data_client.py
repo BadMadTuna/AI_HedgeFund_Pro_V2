@@ -380,8 +380,16 @@ class MarketDataClient:
         except:
             return 'SPY'
 
-    def get_news(self, ticker: str) -> str:
+    def get_news(self, ticker: str, bypass_cache: bool = False) -> str:
+        """Fetches news. Uses 1-hour cache by default, but can be bypassed for live Guardian audits."""
+        
+        # 1. Check cache ONLY if bypass_cache is False
+        if not bypass_cache:
+            cached = self._check_cache('news', ticker, ttl_seconds=3600)
+            if cached: return cached
+
         if not self.api_key: return "No News API Key provided."
+        
         try:
             url = "https://api.tiingo.com/tiingo/news"
             params = {'tickers': ticker, 'limit': 3, 'token': self.api_key}
@@ -390,7 +398,16 @@ class MarketDataClient:
             if res.status_code == 200:
                 articles = res.json()
                 if articles:
-                    return "\n".join([f"- {a['title']}" for a in articles])
+                    news_str = "\n".join([f"- {a['title']}" for a in articles])
+                    
+                    # 2. Only save to cache if we aren't actively bypassing it
+                    if not bypass_cache:
+                        self._save_cache('news', ticker, news_str)
+                        
+                    return news_str
+                    
+            if not bypass_cache:
+                self._save_cache('news', ticker, "No recent major news.")
             return "No recent major news."
         except:
             return "Failed to fetch news."
