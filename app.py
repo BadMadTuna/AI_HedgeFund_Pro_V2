@@ -23,18 +23,24 @@ def get_clients():
 data_client, agent, pm = get_clients()
 
 # --- GLOBAL MACRO STATE INITIALIZATION ---
-if 'current_regime' not in st.session_state or 'regime_metrics' not in st.session_state:
+# 1. Fetch the Auto-Detected Regime first
+if 'detected_regime' not in st.session_state or 'regime_metrics' not in st.session_state:
     with st.spinner("Initializing Macro Environment (Layer 1 Brain)..."):
         regime_data = data_client.get_market_regime("SPY")
         if regime_data:
-            st.session_state.current_regime = regime_data['regime']
+            st.session_state.detected_regime = regime_data['regime']
             st.session_state.regime_metrics = regime_data['metrics']
-            st.session_state.regime_action = regime_data['recommended_action']
+            st.session_state.detected_action = regime_data['recommended_action']
         else:
             # Safe Fallbacks
-            st.session_state.current_regime = 'VOLATILE_BEAR' 
+            st.session_state.detected_regime = 'VOLATILE_BEAR' 
             st.session_state.regime_metrics = {'current_price': 0, 'sma_50': 0, 'sma_200': 0, 'current_volatility': 0, 'baseline_volatility': 0}
-            st.session_state.regime_action = "Maximum Defense"
+            st.session_state.detected_action = "Maximum Defense"
+
+# 2. Set the active current_regime to the detected one if it hasn't been manually overridden yet
+if 'current_regime' not in st.session_state:
+    st.session_state.current_regime = st.session_state.detected_regime
+    st.session_state.regime_action = st.session_state.detected_action
 
 # --- HELPERS ---
 @st.cache_data(ttl=86400) # Cache for 24 hours
@@ -55,9 +61,36 @@ def get_sp500_tickers():
         st.error(f"Failed to fetch S&P 500: {e}. Using default tech list.")
         return ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA"]
 
-# --- HEADER ---
+# --- HEADER & SIDEBAR ---
 st.title("🦅 AI Hedge Fund Manager (Pro V2)")
 st.markdown("Powered by Tiingo, Gemini 2.5 Pro, and SQLite.")
+
+st.sidebar.header("⚙️ Global Settings")
+st.sidebar.markdown("**Layer 1 Brain Override**")
+
+regime_options = ["QUIET_BULL", "VOLATILE_BULL", "QUIET_BEAR", "VOLATILE_BEAR"]
+selected_regime = st.sidebar.selectbox(
+    "Force Market Regime:",
+    options=regime_options,
+    index=regime_options.index(st.session_state.current_regime)
+)
+
+# Trigger synchronization if the user manually overrides the regime
+if selected_regime != st.session_state.current_regime:
+    st.session_state.current_regime = selected_regime
+    directives = {
+        "QUIET_BULL": "Aggressive Trend/Momentum",
+        "VOLATILE_BULL": "Mean Reversion / Profit Taking",
+        "QUIET_BEAR": "Deep Value / Dividend Yield",
+        "VOLATILE_BEAR": "Maximum Defense / Cash Preservation"
+    }
+    st.session_state.regime_action = directives.get(selected_regime, "Unknown")
+    st.rerun()
+
+st.sidebar.divider()
+st.sidebar.info(f"🤖 **Auto-Detected Math:**\n{st.session_state.detected_regime.replace('_', ' ')}")
+if st.session_state.current_regime != st.session_state.detected_regime:
+    st.sidebar.warning("⚠️ Manual Override Active! The AI is currently ignoring the auto-detected trend.")
 
 # --- TABS ---
 tab_port, tab_radar, tab_analyze, tab_journal, tab_backtest = st.tabs([
@@ -84,18 +117,18 @@ with tab_port:
 
     if refresh_clicked and not df_port.empty:
         with st.spinner("Fetching real-time IEX top-of-book prices via Tiingo..."):
+            
+            # --- THE FIX: Bulletproof Yahoo Finance FX Fetcher ---
             try:
-                api_key = getattr(data_client, 'api_key', None) 
-                if not api_key: api_key = os.getenv("TIINGO_API_KEY")
-
-                # 1. Fetch live FX rate (EUR/USD)
-                fx_url = "https://api.tiingo.com/tiingo/fx/top"
-                fx_res = requests.get(fx_url, params={'tickers': 'eurusd', 'token': api_key})
-                fx_res.raise_for_status()
-                usd_to_eur = 1.0 / fx_res.json()[0]['midPrice']
+                import yfinance as yf
+                # EURUSD=X gives how many USD it takes to buy 1 EUR (e.g., 1.08)
+                eurusd_price = yf.Ticker("EURUSD=X").fast_info['last_price']
+                # We need USD to EUR multiplier
+                usd_to_eur = 1.0 / eurusd_price 
             except Exception as e:
                 st.warning(f"Could not fetch live FX rate ({e}). Defaulting to 0.92.")
                 usd_to_eur = 0.92
+            # -----------------------------------------------------
 
             # 2. Sort tickers into US (Tiingo IEX) and EU (YFinance Fallback)
             us_tickers = []
@@ -108,6 +141,9 @@ with tab_port:
                 else: us_tickers.append(t)
 
             # 3. BULK FETCH US Real-Time Prices (Tiingo IEX)
+            api_key = getattr(data_client, 'api_key', None) 
+            if not api_key: api_key = os.getenv("TIINGO_API_KEY")
+            
             if us_tickers and api_key:
                 try:
                     iex_url = "https://api.tiingo.com/iex/"
@@ -477,7 +513,7 @@ with tab_radar:
         st.session_state.scan_top_20_alpha = None
     
     with st.expander("🌍 Layer 1: Macro Regime Classifier (The Brain)", expanded=True):
-        # NO API CALL HERE! Just read from the synchronized global state.
+        # Read from the globally synchronized state (which includes manual overrides)
         current_reg = st.session_state.current_regime
         metrics = st.session_state.regime_metrics
         action = st.session_state.regime_action
@@ -491,10 +527,13 @@ with tab_radar:
         }
         icon = regime_colors.get(current_reg, "⚪")
         
-        st.markdown(f"### {icon} CURRENT REGIME: **{current_reg.replace('_', ' ')}**")
+        st.markdown(f"### {icon} ACTIVE REGIME: **{current_reg.replace('_', ' ')}**")
+        if st.session_state.current_regime != st.session_state.detected_regime:
+            st.error(f"⚠️ **Note:** This is a MANUAL OVERRIDE. The underlying math currently detects a **{st.session_state.detected_regime.replace('_', ' ')}**.")
         st.info(f"**System Directive:** {action}")
         
         st.markdown("---")
+        st.caption("Underlying SPY Technical Diagnostics:")
         c1, c2, c3, c4 = st.columns(4)
         
         # Trend Metrics
@@ -514,7 +553,7 @@ with tab_radar:
     tickers_to_scan = get_sp500_tickers()
 
     if st.button("🚀 Launch Multi-Engine Alpha Scan", type="primary"):
-        # Fetch the current regime (default to strict safety if missing)
+        # Fetch the current regime (which now correctly respects the override)
         current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
         
         st.subheader(f"⚙️ Layer 2 Dispatch: Adapting to {current_regime.replace('_', ' ')}")
@@ -530,10 +569,7 @@ with tab_radar:
             
             def fetch_quant(t):
                 sector_etf = data_client.get_sector_for_ticker(t)
-                
-                # --- THE FIX: Use the upgraded get_market_regime function ---
                 sector_regime = data_client.get_market_regime(sector_etf)
-                
                 metrics = data_client.get_smart_momentum(t)
                 if not metrics: return None
                 
@@ -542,7 +578,6 @@ with tab_radar:
 
                 return {
                     'Ticker': t, 'Sector': sector_etf,
-                    # Grab 'regime' instead of the old 'status' key
                     'Sector Health': sector_regime['regime'] if sector_regime else "Unknown",
                     'Price': metrics['Current_Price'], 'Smooth_Score': metrics['Smooth_Score'],
                     **tech
@@ -727,7 +762,6 @@ with tab_radar:
         top_20_alpha = st.session_state.scan_top_20_alpha
         
         st.subheader("🔬 Tier 2: Algorithmic Engine Candidates")
-        # FIX 1: Remove hardcoded columns. Render the dataframe exactly as the Engine built it.
         st.dataframe(top_20_alpha, use_container_width=True)
 
         st.subheader("🧠 Tier 3: AI Deep Dive")
@@ -749,7 +783,6 @@ with tab_radar:
         for _, row in df_final.iterrows():
             if row['Verdict'] in ['BUY', 'WATCH']: 
                 with st.expander(f"{row['Verdict']} | {row['Ticker']} (AI Score: {row['AI Score']})"):
-                    # FIX 2: Use the unified 'Engine Metric' we created instead of 'Alpha Score'
                     st.write(f"**Sector:** {row['Sector']} | **Primary Metric:** {row.get('Engine Metric', 'N/A')}")
                     
                     if row['Verdict'] == 'BUY':
@@ -864,20 +897,15 @@ with tab_analyze:
                 st.text(news)
                 
                 st.markdown("### 🧠 Quantamental AI Verdict")
-                # --- THE FIX: Formatted & Clarified "God Mode" Payload ---
+                
+                # --- THE FIX: Regime-Filtered "Deep Dive" Payload ---
                 tech = data_client.get_technicals(a_ticker) or {}
                 funds = data_client.get_fundamentals(a_ticker) or {}
                 mom_metrics = data_client.get_smart_momentum(a_ticker) or {}
                 rev_metrics = data_client.get_mean_reversion_metrics(a_ticker) or {}
                 val_metrics = data_client.get_deep_value_metrics(a_ticker) or {}
                 
-                # Format the metrics so the AI understands the percentages
-                upside_raw = rev_metrics.get('Upside_to_Mean', 0)
-                upside_str = f"{upside_raw:.1%}" if upside_raw else "0.0%"
-                div_raw = val_metrics.get('Dividend_Yield', 0)
-                div_str = f"{div_raw:.1%}" if div_raw else "0.0%"
-                
-                # Combine everything with explicit mathematical trigger flags
+                # 1. Base Fundamentals (Always include these)
                 tech_fund_data = {
                     "Price": tech.get('Current_Price', 0),
                     "RSI": tech.get('RSI_14', 50),
@@ -885,24 +913,29 @@ with tab_analyze:
                     "FCF_Yield": f"{funds.get('FCF_Yield', 0):.1%}",
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
                     "EV_EBITDA": funds.get('EV_EBITDA', 0),
-                    
-                    # Engine A: Momentum
-                    "Smooth_Score": mom_metrics.get('Smooth_Score', 0),
-                    
-                    # Engine B: Mean Reversion
-                    "Upside_to_Mean": upside_str,
-                    "Lower_BB": rev_metrics.get('Lower_BB', 0),
-                    "Is_Oversold_Setup": rev_metrics.get('Is_Oversold_Setup', False), # Crucial for the AI
-                    
-                    # Engine C: Deep Value
-                    "Value_Score": val_metrics.get('Value_Score', 0),
-                    "Dividend_Yield": div_str
                 }
                 
-                # Fetch current regime from global state
+                # 2. Add Engine-Specific Triggers based on current Regime
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
                 
-                # Run the AI
+                if current_regime == "QUIET_BULL":
+                    # Only trigger Engine A logic (Momentum)
+                    tech_fund_data["Smooth_Score"] = mom_metrics.get('Smooth_Score', 0)
+                    
+                elif current_regime in ["VOLATILE_BULL", "VOLATILE_BEAR"]:
+                    # Only trigger Engine B logic (Mean Reversion)
+                    upside_raw = rev_metrics.get('Upside_to_Mean', 0)
+                    tech_fund_data["Upside_to_Mean"] = f"{upside_raw:.1%}" if upside_raw else "0.0%"
+                    tech_fund_data["Lower_BB"] = rev_metrics.get('Lower_BB', 0)
+                    tech_fund_data["Is_Oversold_Setup"] = rev_metrics.get('Is_Oversold_Setup', False)
+                    
+                elif current_regime == "QUIET_BEAR":
+                    # Only trigger Engine C logic (Value/Yield)
+                    div_raw = val_metrics.get('Dividend_Yield', 0)
+                    tech_fund_data["Value_Score"] = val_metrics.get('Value_Score', 0)
+                    tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}" if div_raw else "0.0%"
+                
+                # 3. Run the AI Analyst
                 ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn, current_regime)
                 
                 if ai_res.get('verdict') == "BUY": st.success(f"Score: {ai_res.get('score')} | Verdict: BUY")
