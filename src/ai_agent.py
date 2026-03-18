@@ -64,11 +64,16 @@ class AIAgent:
         """
         
         try:
-            response = self.model.generate_content(system_prompt)
+            # THE FIX: Lock temperature to 0.0 for deterministic scoring
+            response = self.model.generate_content(
+                system_prompt,
+                generation_config={"temperature": 0.0}
+            )
             clean_text = self._clean_json(response.text)
             return json.loads(clean_text)
         except Exception as e:
-            return {"score": 0, "verdict": "ERROR", "reasoning": f"AI Parsing Error: {e}"}
+            # Fallback error handling
+            return {"score": 0, "verdict": "ERROR", "reasoning": f"AI generation failed: {str(e)}"}
 
     def get_guardian_audit(self, ticker, pos_data, news, earnings, funds, current_regime):
         """
@@ -122,8 +127,12 @@ class AIAgent:
         """
         
         try:
-            response = self.model.generate_content(system_prompt)
+            # THE FIX: Lock temperature to 0.0 for deterministic risk management
+            response = self.model.generate_content(
+                system_prompt,
+                generation_config={"temperature": 0.0}
+            )
             clean_text = self._clean_json(response.text)
             return json.loads(clean_text)
         except Exception as e:
-            return {"action": "ERROR", "earnings_risk": "Unknown", "reasoning": f"AI parsing failed: {e}", "proposed_stop": "N/A"}
+            return {"action": "ERROR", "earnings_risk": "Unknown", "reasoning": str(e), "proposed_stop": "N/A"}
