@@ -31,12 +31,18 @@ class MarketDataClient:
         self.api_key = os.getenv("TIINGO_API_KEY")
         self.headers = {'Content-Type': 'application/json'}
         
+        # --- THE FIX: Stealth Session to bypass Yahoo Finance blocks ---
+        self.yf_session = requests.Session()
+        self.yf_session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        })
+        # ---------------------------------------------------------------
+        
         # Initialize Universal Memory Banks
         if 'mdc_caches' not in st.session_state:
             st.session_state.mdc_caches = {
                 'regime': {}, 'fund': {}, 'tech': {}, 
-                'mom': {}, 'rev': {}, 'val': {}, 'sector': {},
-                'news': {}  # <--- JUST ADD THIS KEY HERE
+                'mom': {}, 'rev': {}, 'val': {}, 'sector': {}, 'news': {}
             }
         self.caches = st.session_state.mdc_caches
 
@@ -44,27 +50,29 @@ class MarketDataClient:
     # ROBUST RETRY WRAPPERS (Prevents YF Dropouts)
     # ==========================================
     def _get_history_with_retry(self, ticker: str, period: str, retries=3):
-        """Fetches YF history with exponential backoff to bypass rate limits."""
+        """Fetches YF history with exponential backoff and stealth session."""
         for attempt in range(retries):
             try:
-                hist = yf.Ticker(ticker).history(period=period)
+                # Pass the stealth session here
+                hist = yf.Ticker(ticker, session=self.yf_session).history(period=period)
                 if not hist.empty:
                     return hist
             except Exception:
                 pass
-            time.sleep(0.3 * (attempt + 1)) # Sleep and try again
+            time.sleep(0.5 * (attempt + 1)) 
         return pd.DataFrame()
 
     def _get_info_with_retry(self, ticker: str, retries=3):
-        """Fetches YF fundamental info with backoff."""
+        """Fetches YF fundamental info with stealth session."""
         for attempt in range(retries):
             try:
-                info = yf.Ticker(ticker).info
+                # Pass the stealth session here
+                info = yf.Ticker(ticker, session=self.yf_session).info
                 if info and ('returnOnEquity' in info or 'marketCap' in info):
                     return info
             except Exception:
                 pass
-            time.sleep(0.3 * (attempt + 1))
+            time.sleep(0.5 * (attempt + 1))
         return {}
 
     # ==========================================
