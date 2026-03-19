@@ -347,6 +347,41 @@ with tab_port:
                     else:
                         st.error("Failed. Ensure you own enough shares of the stock.")
 
+        with st.expander("✏️ Fix Fat-Finger Mistake (Edit Price / Delete)"):
+            with st.form("fix_form"):
+                f_ticker = st.text_input("Ticker to Fix").upper()
+                f_new_price = st.number_input("Correct Entry Price", min_value=0.0, value=0.0)
+                
+                c1, c2 = st.columns(2)
+                submit_edit = c1.form_submit_button("Update Price")
+                submit_delete = c2.form_submit_button("Delete Position Entirely")
+                
+                if submit_edit and f_new_price > 0:
+                    try:
+                        conn = sqlite3.connect("data/hedgefund.db")
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE portfolio SET cost = ? WHERE ticker = ? AND status = 'OPEN'", (f_new_price, f_ticker))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Fixed {f_ticker} entry price to €{f_new_price:.2f}!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to update: {e}")
+                        
+                if submit_delete:
+                    try:
+                        conn = sqlite3.connect("data/hedgefund.db")
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM portfolio WHERE ticker = ? AND status = 'OPEN'", (f_ticker,))
+                        conn.commit()
+                        conn.close()
+                        st.warning(f"Completely erased {f_ticker} from open portfolio!")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to delete: {e}")
+
     st.markdown("---")
 
     # --- PORTFOLIO CORRELATION MATRIX ---
