@@ -349,7 +349,8 @@ with tab_port:
 
         with st.expander("✏️ Fix Fat-Finger Mistake (Edit Price / Delete)"):
             with st.form("fix_form"):
-                f_ticker = st.text_input("Ticker to Fix").upper()
+                # .strip() removes accidental spaces before or after the ticker
+                f_ticker = st.text_input("Ticker to Fix").upper().strip()
                 f_new_price = st.number_input("Correct Entry Price", min_value=0.0, value=0.0)
                 
                 c1, c2 = st.columns(2)
@@ -360,10 +361,17 @@ with tab_port:
                     try:
                         conn = sqlite3.connect("data/hedgefund.db")
                         cursor = conn.cursor()
-                        cursor.execute("UPDATE portfolio SET cost = ? WHERE ticker = ? AND status = 'OPEN'", (f_new_price, f_ticker))
-                        conn.commit()
+                        # THE FIX: UPPER(status) catches both 'Open' and 'OPEN'
+                        cursor.execute("UPDATE portfolio SET cost = ? WHERE ticker = ? AND UPPER(status) = 'OPEN'", (f_new_price, f_ticker))
+                        
+                        # Verify we actually updated a row before celebrating
+                        if cursor.rowcount > 0:
+                            conn.commit()
+                            st.success(f"Fixed {f_ticker} entry price to €{f_new_price:.2f}!")
+                        else:
+                            st.error(f"Could not find an open position for {f_ticker}.")
+                            
                         conn.close()
-                        st.success(f"Fixed {f_ticker} entry price to €{f_new_price:.2f}!")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
@@ -373,10 +381,15 @@ with tab_port:
                     try:
                         conn = sqlite3.connect("data/hedgefund.db")
                         cursor = conn.cursor()
-                        cursor.execute("DELETE FROM portfolio WHERE ticker = ? AND status = 'OPEN'", (f_ticker,))
-                        conn.commit()
+                        cursor.execute("DELETE FROM portfolio WHERE ticker = ? AND UPPER(status) = 'OPEN'", (f_ticker,))
+                        
+                        if cursor.rowcount > 0:
+                            conn.commit()
+                            st.warning(f"Completely erased {f_ticker} from open portfolio!")
+                        else:
+                            st.error(f"Could not find an open position for {f_ticker}.")
+                            
                         conn.close()
-                        st.warning(f"Completely erased {f_ticker} from open portfolio!")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
