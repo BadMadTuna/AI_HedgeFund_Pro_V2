@@ -68,7 +68,7 @@ st.markdown("Powered by Tiingo, Gemini 2.5 Pro, and SQLite.")
 st.sidebar.header("⚙️ Global Settings")
 st.sidebar.markdown("**Layer 1 Brain Override**")
 
-regime_options = ["QUIET_BULL", "VOLATILE_BULL", "QUIET_BEAR", "VOLATILE_BEAR"]
+regime_options = ["QUIET_BULL", "VOLATILE_BULL", "QUIET_BEAR", "VOLATILE_BEAR", "STAGFLATION_SHOCK"]
 selected_regime = st.sidebar.selectbox(
     "Force Market Regime:",
     options=regime_options,
@@ -82,7 +82,8 @@ if selected_regime != st.session_state.current_regime:
         "QUIET_BULL": "Aggressive Trend/Momentum",
         "VOLATILE_BULL": "Mean Reversion / Profit Taking",
         "QUIET_BEAR": "Deep Value / Dividend Yield",
-        "VOLATILE_BEAR": "Maximum Defense / Cash Preservation"
+        "VOLATILE_BEAR": "Maximum Defense / Cash Preservation",
+        "STAGFLATION_SHOCK": "Stagflation Survival / Low Debt / High Cash Flow"
     }
     st.session_state.regime_action = directives.get(selected_regime, "Unknown")
     st.rerun()
@@ -498,6 +499,9 @@ with tab_port:
                     news = data_client.get_news(ticker)
                     earn = data_client.get_earnings_date(ticker)
                     funds = data_client.get_fundamentals(ticker) 
+                    # THE FIX: Grab the dividend yield for the Guardian!
+                    info = data_client._get_info_with_retry(ticker) or {}
+                    funds['Dividend_Yield'] = info.get('dividendYield', 0.0)
                     
                     # Pass the explicit string, NOT st.session_state
                     v = agent.get_guardian_audit(ticker, row_data, news, earn, funds, macro_regime)
@@ -759,6 +763,43 @@ with tab_radar:
                 st.info("No companies met the strict deep value and yield requirements today.")
 
         # ==========================================
+        # ENGINE D: STAGFLATION HUNTER (SHOCK REGIME)
+        # ==========================================
+        elif current_regime == "STAGFLATION_SHOCK":
+            st.error("⚫ Deploying ENGINE D: Stagflation & Survival Hunter...")
+            stag_results = []
+            progress_bar = st.progress(0)
+            
+            def fetch_stagflation(t):
+                stag_metrics = data_client.get_stagflation_metrics(t)
+                if not stag_metrics: return None
+                
+                # STRICT SURVIVAL FILTERS: 
+                # Must survive the Debt Guillotine (Score > 0) AND have > 5% FCF Yield
+                if stag_metrics['Stagflation_Score'] == 0 or stag_metrics['FCF_Yield'] < 0.05:
+                    return None
+                    
+                return {
+                    **stag_metrics,
+                    'Price': stag_metrics['Current_Price'],
+                    'Primary_Metric': f"Stag Score: {stag_metrics['Stagflation_Score']} | FCF: {stag_metrics['FCF_Yield']:.1%}",
+                    'ROE': f"Margins: {stag_metrics['Gross_Margins']:.1%}" # Repurposed to feed the AI UI cleanly
+                }
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(fetch_stagflation, t): t for t in tickers_to_scan}
+                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                    res = future.result()
+                    if res: stag_results.append(res)
+                    progress_bar.progress((i + 1) / len(tickers_to_scan))
+                    
+            if stag_results:
+                candidates_df = pd.DataFrame(stag_results).sort_values(by="Stagflation_Score", ascending=False).head(20)
+                st.dataframe(candidates_df[['Ticker', 'Sector', 'Survival_Rating', 'FCF_Yield', 'Debt_to_Equity', 'Gross_Margins', 'Stagflation_Score']], use_container_width=True)
+            else:
+                st.info("No companies met the strict survival, low-debt, and cash flow requirements today.")
+
+        # ==========================================
         # TIER 3: AI HUNTER (UNIVERSAL DEEP DIVE)
         # ==========================================
         if not candidates_df.empty:
@@ -965,6 +1006,10 @@ with tab_analyze:
                 
                 # 2. Add Engine-Specific Triggers based on current Regime
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
+
+                info = data_client._get_info_with_retry(a_ticker) or {}
+                div_raw = info.get('dividendYield', 0.0)
+                tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}" if div_raw else "0.0%"
                 
                 if current_regime == "QUIET_BULL":
                     # Only trigger Engine A logic (Momentum)
@@ -982,6 +1027,12 @@ with tab_analyze:
                     div_raw = val_metrics.get('Dividend_Yield', 0)
                     tech_fund_data["Value_Score"] = val_metrics.get('Value_Score', 0)
                     tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}" if div_raw else "0.0%"
+
+                elif current_regime == "STAGFLATION_SHOCK":
+                    stag_metrics = data_client.get_stagflation_metrics(a_ticker) or {}
+                    tech_fund_data["Stagflation_Score"] = stag_metrics.get('Stagflation_Score', 0)
+                    tech_fund_data["Survival_Rating"] = stag_metrics.get('Survival_Rating', 'Unknown')
+                    tech_fund_data["Debt_to_Equity"] = stag_metrics.get('Debt_to_Equity', 999)
                 
                 # 3. Run the AI Analyst
                 ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn, current_regime)

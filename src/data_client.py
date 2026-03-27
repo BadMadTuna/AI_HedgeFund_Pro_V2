@@ -35,7 +35,7 @@ class MarketDataClient:
         if 'mdc_caches' not in st.session_state:
             st.session_state.mdc_caches = {
                 'regime': {}, 'fund': {}, 'tech': {}, 
-                'mom': {}, 'rev': {}, 'val': {}, 'sector': {}
+                'mom': {}, 'rev': {}, 'val': {}, 'stag': {}, 'sector': {}
             }
         self.caches = st.session_state.mdc_caches
 
@@ -315,6 +315,79 @@ class MarketDataClient:
             self._save_cache('val', ticker, result)
             return result
         except Exception:
+            return None
+        
+    # ==========================================
+    # ENGINE D: STAGFLATION HUNTER (SHOCK REGIME)
+    # ==========================================
+    def get_stagflation_metrics(self, ticker: str) -> dict:
+        cached = self._check_cache('stag', ticker, ttl_seconds=3600)
+        if cached: return cached
+
+        try:
+            info = self._get_info_with_retry(ticker)
+            if not info: return None
+            
+            # 1. The Debt Guillotine (Yahoo Finance usually returns this as a whole number, e.g., 40 = 40%)
+            debt_to_equity = info.get('debtToEquity', 999) 
+            
+            # 2. Hard Cash Generation
+            fcf = info.get('freeCashflow', 0)
+            market_cap = info.get('marketCap', 1)
+            fcf_yield = fcf / market_cap if market_cap and fcf else 0
+            
+            # 3. Pricing Power (Gross Margins)
+            gross_margins = info.get('grossMargins', 0)
+            
+            # 4. Sector Premium
+            sector = info.get('sector', 'Unknown')
+            industry = info.get('industry', 'Unknown')
+            
+            # Sectors that thrive or survive in stagflation/conflict
+            stagflation_sectors = ['Energy', 'Basic Materials', 'Healthcare', 'Consumer Defensive']
+            defense_industries = ['Aerospace & Defense']
+            
+            sector_premium = 0
+            if sector in stagflation_sectors or industry in defense_industries:
+                sector_premium = 50  # Massive mathematical boost for being in the right neighborhood
+                
+            # --- SCORING LOGIC ---
+            score = 0
+            
+            # Reward Free Cash Flow (e.g., 5% yield = +50 points)
+            score += (fcf_yield * 1000)
+            
+            # Reward Pricing Power (e.g., 40% margins = +20 points)
+            score += (gross_margins * 50)
+            
+            # Add the macro/geopolitical tailwind premium
+            score += sector_premium
+            
+            # THE GUILLOTINE: If Debt-to-Equity is over 40%, the company is a restructuring risk. Slash score to zero.
+            if debt_to_equity > 40:
+                score = 0
+                survival_rating = "HIGH RISK (Debt > 40%)"
+            else:
+                survival_rating = "FORTRESS"
+
+            current_price = info.get('currentPrice', info.get('previousClose', 0))
+            
+            result = {
+                'Ticker': ticker,
+                'Current_Price': round(current_price, 2),
+                'Debt_to_Equity': round(debt_to_equity, 2),
+                'FCF_Yield': round(fcf_yield, 4),
+                'Gross_Margins': round(gross_margins, 4),
+                'Sector': sector,
+                'Industry': industry,
+                'Survival_Rating': survival_rating,
+                'Stagflation_Score': round(score, 2)
+            }
+            
+            self._save_cache('stag', ticker, result)
+            return result
+            
+        except Exception as e:
             return None
 
     # ==========================================
