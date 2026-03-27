@@ -782,8 +782,9 @@ with tab_radar:
                 return {
                     **stag_metrics,
                     'Price': stag_metrics['Current_Price'],
+                    'Debt_to_Equity': f"{stag_metrics['Debt_to_Equity']}%", # <-- ADD THIS LINE
                     'Primary_Metric': f"Stag Score: {stag_metrics['Stagflation_Score']} | FCF: {stag_metrics['FCF_Yield']:.1%}",
-                    'ROE': f"Margins: {stag_metrics['Gross_Margins']:.1%}" # Repurposed to feed the AI UI cleanly
+                    'ROE': f"Margins: {stag_metrics['Gross_Margins']:.1%}" 
                 }
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -1032,7 +1033,8 @@ with tab_analyze:
                     stag_metrics = data_client.get_stagflation_metrics(a_ticker) or {}
                     tech_fund_data["Stagflation_Score"] = stag_metrics.get('Stagflation_Score', 0)
                     tech_fund_data["Survival_Rating"] = stag_metrics.get('Survival_Rating', 'Unknown')
-                    tech_fund_data["Debt_to_Equity"] = stag_metrics.get('Debt_to_Equity', 999)
+                    # ADD THE % SIGN FORMATTING HERE
+                    tech_fund_data["Debt_to_Equity"] = f"{stag_metrics.get('Debt_to_Equity', 999)}%"
                 
                 # 3. Run the AI Analyst
                 ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn, current_regime)
