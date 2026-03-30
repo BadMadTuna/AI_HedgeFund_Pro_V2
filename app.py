@@ -1004,6 +1004,23 @@ with tab_analyze:
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
                     "EV_EBITDA": funds.get('EV_EBITDA', 0),
                 }
+
+                # --- THE FIX: Add the missing Sector Health for Tab 3 ---
+                sector_etf = data_client.get_sector_for_ticker(a_ticker)
+                sector_regime = data_client.get_market_regime(sector_etf)
+                tech_fund_data["Sector_Health"] = sector_regime['regime'] if sector_regime else "Unknown"
+                # --------------------------------------------------------
+
+                # --- THE FIX: Patch Yahoo Finance's raw percentage bug ---
+                info = data_client._get_info_with_retry(a_ticker) or {}
+                div_raw = info.get('dividendYield', 0.0)
+                
+                # If the number is > 0.20 (20%), it's highly likely Yahoo returned an un-normalized percentage
+                if div_raw > 0.20:
+                    div_raw = div_raw / 100 
+                    
+                tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}" if div_raw else "0.0%"
+                # ---------------------------------------------------------
                 
                 # 2. Add Engine-Specific Triggers based on current Regime
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
