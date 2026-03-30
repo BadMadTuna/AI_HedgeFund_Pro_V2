@@ -654,7 +654,7 @@ with tab_radar:
                 
                 def fetch_fund(row):
                     t = row['Ticker']
-                    funds = data_client.get_fundamentals(t)
+                    funds = data_client.get_fundamentals(t) or {}
                     
                     # --- THE FIX: If Yahoo is blocked, skip the stock immediately ---
                     if not funds: 
@@ -662,19 +662,19 @@ with tab_radar:
                     # ----------------------------------------------------------------
                     
                     smooth_pts = row['Smooth_Score'] * 10 
-                    quality_pts = (funds['ROE'] * 50) + (funds['Gross_Margin'] * 20)
-                    ev = funds['EV_EBITDA']
+                    quality_pts = (funds.get('ROE', 0) * 50) + (funds.get('Gross_Margin', 0) * 20)
+                    ev = funds.get('EV_EBITDA', 0)
                     ev_pts = max(0, 30 - ev) if ev > 0 else 0 
-                    value_pts = (funds['FCF_Yield'] * 200) + ev_pts
+                    value_pts = (funds.get('FCF_Yield', 0) * 200) + ev_pts
                     
                     alpha_score = smooth_pts + quality_pts + value_pts
                     
                     return {
                         **row,
-                        'ROE': f"{funds['ROE']:.1%}",
-                        'Margin': f"{funds['Gross_Margin']:.1%}",
-                        'EV/EBITDA': round(funds['EV_EBITDA'], 1) if funds['EV_EBITDA'] > 0 else "N/A",
-                        'Debt_to_Equity': f"{funds.get('Debt_to_Equity', 999)}%", # <--- ADD THIS
+                        'ROE': f"{funds.get('ROE', 0):.1%}",
+                        'Margin': f"{funds.get('Gross_Margin', 0):.1%}",
+                        'EV/EBITDA': round(funds.get('EV_EBITDA', 0), 1) if funds.get('EV_EBITDA', 0) > 0 else "N/A",
+                        'Debt_to_Equity': f"{funds.get('Debt_to_Equity', 999)}%", 
                         'Alpha_Score': round(alpha_score, 1),
                         'Primary_Metric': f"Alpha: {round(alpha_score, 1)}"
                     }
@@ -686,7 +686,13 @@ with tab_radar:
                         if res: fund_results.append(res)
                         fund_pb.progress((i + 1) / len(top_50_df))
                 
-                candidates_df = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False).head(20)
+                # --- THE FIX: Only sort if we actually got data back ---
+                if fund_results:
+                    candidates_df = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False).head(20)
+                else:
+                    candidates_df = pd.DataFrame()
+                    st.warning("⚠️ Could not fetch fundamental data for any candidates. Yahoo Finance may be rate-limiting your IP.")
+                # --------------------------------------------------------
 
         # ==========================================
         # ENGINE B: MEAN REVERSION (VOLATILE REGIMES)
@@ -702,15 +708,10 @@ with tab_radar:
                     return None
                 
                 # --- THE FIX: Safely check fundamentals ---
-                funds = data_client.get_fundamentals(t)
+                funds = data_client.get_fundamentals(t) or {}
                 if not funds or funds.get('FCF_Yield', 0) <= 0: 
                     return None
                 # ------------------------------------------
-                
-                # Quality filter: Must have positive Free Cash Flow to survive the dip
-                funds = data_client.get_fundamentals(t) or {}
-                if funds['FCF_Yield'] <= 0: 
-                    return None
                     
                 sector = data_client.get_sector_for_ticker(t)
                 return {
@@ -794,7 +795,7 @@ with tab_radar:
                 return {
                     **stag_metrics,
                     'Price': stag_metrics['Current_Price'],
-                    'Debt_to_Equity': f"{stag_metrics['Debt_to_Equity']}%", # <-- ADD THIS LINE
+                    'Debt_to_Equity': f"{stag_metrics['Debt_to_Equity']}%", 
                     'Primary_Metric': f"Stag Score: {stag_metrics['Stagflation_Score']} | FCF: {stag_metrics['FCF_Yield']:.1%}",
                     'ROE': f"Margins: {stag_metrics['Gross_Margins']:.1%}" 
                 }
@@ -1017,7 +1018,7 @@ with tab_analyze:
                     "FCF_Yield": f"{funds.get('FCF_Yield', 0):.1%}",
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
                     "EV_EBITDA": round(ev_raw, 1) if ev_raw > 0 else "N/A",
-                    "Debt_to_Equity": f"{funds.get('Debt_to_Equity', 999)}%", # <--- ADD THIS
+                    "Debt_to_Equity": f"{funds.get('Debt_to_Equity', 999)}%", 
                 }
 
                 # --- THE FIX: Add the missing Sector Health for Tab 3 ---
