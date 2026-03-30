@@ -654,7 +654,12 @@ with tab_radar:
                 
                 def fetch_fund(row):
                     t = row['Ticker']
-                    funds = data_client.get_fundamentals(t) or {}
+                    funds = data_client.get_fundamentals(t)
+                    
+                    # --- THE FIX: If Yahoo is blocked, skip the stock immediately ---
+                    if not funds: 
+                        return None
+                    # ----------------------------------------------------------------
                     
                     smooth_pts = row['Smooth_Score'] * 10 
                     quality_pts = (funds['ROE'] * 50) + (funds['Gross_Margin'] * 20)
@@ -695,6 +700,12 @@ with tab_radar:
                 rev_metrics = data_client.get_mean_reversion_metrics(t)
                 if not rev_metrics or not rev_metrics.get('Is_Oversold_Setup'): 
                     return None
+                
+                # --- THE FIX: Safely check fundamentals ---
+                funds = data_client.get_fundamentals(t)
+                if not funds or funds.get('FCF_Yield', 0) <= 0: 
+                    return None
+                # ------------------------------------------
                 
                 # Quality filter: Must have positive Free Cash Flow to survive the dip
                 funds = data_client.get_fundamentals(t) or {}
