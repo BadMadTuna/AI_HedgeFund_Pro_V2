@@ -1022,13 +1022,8 @@ with tab_analyze:
                 div_raw = div_rate / curr_price if curr_price > 0 else 0.0
                 tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}"
                 
-                
                 # 2. Add Engine-Specific Triggers based on current Regime
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
-
-                info = data_client._get_info_with_retry(a_ticker) or {}
-                div_raw = info.get('dividendYield', 0.0)
-                tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}" if div_raw else "0.0%"
                 
                 if current_regime == "QUIET_BULL":
                     # Only trigger Engine A logic (Momentum)
@@ -1043,15 +1038,12 @@ with tab_analyze:
                     
                 elif current_regime == "QUIET_BEAR":
                     # Only trigger Engine C logic (Value/Yield)
-                    div_raw = val_metrics.get('Dividend_Yield', 0)
                     tech_fund_data["Value_Score"] = val_metrics.get('Value_Score', 0)
-                    tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}" if div_raw else "0.0%"
 
                 elif current_regime == "STAGFLATION_SHOCK":
                     stag_metrics = data_client.get_stagflation_metrics(a_ticker) or {}
                     tech_fund_data["Stagflation_Score"] = stag_metrics.get('Stagflation_Score', 0)
                     tech_fund_data["Survival_Rating"] = stag_metrics.get('Survival_Rating', 'Unknown')
-                    # ADD THE % SIGN FORMATTING HERE
                     tech_fund_data["Debt_to_Equity"] = f"{stag_metrics.get('Debt_to_Equity', 999)}%"
                 
                 # 3. Run the AI Analyst
