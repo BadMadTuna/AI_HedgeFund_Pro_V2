@@ -996,13 +996,15 @@ with tab_analyze:
                 val_metrics = data_client.get_deep_value_metrics(a_ticker) or {}
                 
                 # 1. Base Fundamentals (Always include these)
+                ev_raw = funds.get('EV_EBITDA', 0)
+                
                 tech_fund_data = {
                     "Price": tech.get('Current_Price', 0),
                     "RSI": tech.get('RSI_14', 50),
                     "ROE": f"{funds.get('ROE', 0):.1%}",
                     "FCF_Yield": f"{funds.get('FCF_Yield', 0):.1%}",
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
-                    "EV_EBITDA": funds.get('EV_EBITDA', 0),
+                    "EV_EBITDA": round(ev_raw, 1) if ev_raw > 0 else "N/A", # <--- THE FIX
                 }
 
                 # --- THE FIX: Add the missing Sector Health for Tab 3 ---
