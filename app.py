@@ -1013,16 +1013,15 @@ with tab_analyze:
                 tech_fund_data["Sector_Health"] = sector_regime['regime'] if sector_regime else "Unknown"
                 # --------------------------------------------------------
 
-                # --- THE FIX: Patch Yahoo Finance's raw percentage bug ---
+                # --- THE FIX: Bulletproof Dividend Math ---
                 info = data_client._get_info_with_retry(a_ticker) or {}
-                div_raw = info.get('dividendYield', 0.0)
+                div_rate = info.get('dividendRate') or 0.0
+                curr_price = tech.get('Current_Price') or 1.0
                 
-                # If the number is > 0.20 (20%), it's highly likely Yahoo returned an un-normalized percentage
-                if div_raw > 0.20:
-                    div_raw = div_raw / 100 
-                    
-                tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}" if div_raw else "0.0%"
-                # ---------------------------------------------------------
+                # Manually calculate yield to bypass Yahoo's API hallucination
+                div_raw = div_rate / curr_price if curr_price > 0 else 0.0
+                tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}"
+                
                 
                 # 2. Add Engine-Specific Triggers based on current Regime
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
