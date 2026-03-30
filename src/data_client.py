@@ -314,8 +314,9 @@ class MarketDataClient:
 
         try:
             info = self._get_info_with_retry(ticker)
-            div_yield = info.get('dividendYield', 0)
-            if div_yield is None: div_yield = 0
+            div_rate = info.get('dividendRate') or 0.0
+            current_price = info.get('currentPrice', info.get('previousClose', 1.0))
+            div_yield = div_rate / current_price if current_price > 0 else 0.0
                 
             ev_ebitda = info.get('enterpriseToEbitda', 99) 
             debt_to_equity = info.get('debtToEquity', 999) 
