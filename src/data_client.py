@@ -81,13 +81,14 @@ class MarketDataClient:
             self.caches[cache_name][key] = (data, time.time())
 
     # ==========================================
-    # LAYER 1: THE BRAIN (DUAL-HYSTERESIS)
+    # LAYER 1: THE BRAIN (MACRO AWARENESS)
     # ==========================================
     def get_market_regime(self, ticker="SPY") -> dict:
         cached = self._check_cache('regime', ticker, ttl_seconds=3600)
         if cached: return cached
 
         try:
+            # 1. Base SPY Technicals
             hist = self._get_history_with_retry(ticker, "1y")
             if hist.empty: return None
             
@@ -100,6 +101,7 @@ class MarketDataClient:
             current_vol = daily_returns.tail(20).std() * np.sqrt(252) * 100
             baseline_vol = daily_returns.std() * np.sqrt(252) * 100
             
+            # 2. Base Regime Math (Hysteresis)
             last_trend = st.session_state.get('last_trend', 'BEAR')
             last_vol_state = st.session_state.get('last_vol_state', 'VOLATILE')
 
@@ -119,11 +121,34 @@ class MarketDataClient:
             st.session_state.last_vol_state = current_vol_state
             
             regime_name = f"{current_vol_state}_{current_trend}"
+
+            # 3. INTERMARKET MACRO OVERRIDE (Stagflation Shock Detector)
+            # Fetch the 10-Yr Treasury Yield and Crude Oil Futures
+            tnx_hist = self._get_history_with_retry("^TNX", "3mo") 
+            oil_hist = self._get_history_with_retry("CL=F", "3mo") 
+            
+            tnx_current, oil_current = 0, 0
+            
+            if not tnx_hist.empty and not oil_hist.empty:
+                tnx_current = tnx_hist['Close'].iloc[-1]
+                oil_current = oil_hist['Close'].iloc[-1]
+                
+                # Check the short-term institutional momentum (20-Day SMA)
+                tnx_sma20 = tnx_hist['Close'].rolling(20).mean().iloc[-1]
+                oil_sma20 = oil_hist['Close'].rolling(20).mean().iloc[-1]
+                
+                # THE OVERRIDE LOGIC: 
+                # If Oil and Bond Yields are BOTH breaking out above their SMAs, 
+                # AND the broader stock market (SPY) is below its 200-SMA (Bear Trend)...
+                if (tnx_current > tnx_sma20) and (oil_current > oil_sma20) and (current_trend == 'BEAR'):
+                    regime_name = "STAGFLATION_SHOCK"
+
             directives = {
                 "QUIET_BULL": "Aggressive Trend/Momentum",
                 "VOLATILE_BULL": "Mean Reversion / Profit Taking",
                 "QUIET_BEAR": "Deep Value / Dividend Yield",
-                "VOLATILE_BEAR": "Maximum Defense / Cash Preservation"
+                "VOLATILE_BEAR": "Maximum Defense / Cash Preservation",
+                "STAGFLATION_SHOCK": "Stagflation Survival / Low Debt / High Cash Flow"
             }
             
             result = {
@@ -134,7 +159,10 @@ class MarketDataClient:
                     'sma_50': round(sma_50, 2),
                     'sma_200': round(sma_200, 2),
                     'current_volatility': round(current_vol, 2),
-                    'baseline_volatility': round(baseline_vol, 2)
+                    'baseline_volatility': round(baseline_vol, 2),
+                    # We pass these so the UI or AI can optionally see them
+                    'oil_price': round(oil_current, 2) if oil_current > 0 else "N/A",
+                    'ten_yr_yield': round(tnx_current, 2) if tnx_current > 0 else "N/A"
                 }
             }
             self._save_cache('regime', ticker, result)
