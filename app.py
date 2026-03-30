@@ -668,9 +668,10 @@ with tab_radar:
                         **row,
                         'ROE': f"{funds['ROE']:.1%}",
                         'Margin': f"{funds['Gross_Margin']:.1%}",
-                        'EV/EBITDA': round(funds['EV_EBITDA'], 1),
+                        'EV/EBITDA': round(funds['EV_EBITDA'], 1) if funds['EV_EBITDA'] > 0 else "N/A",
+                        'Debt_to_Equity': f"{funds.get('Debt_to_Equity', 999)}%", # <--- ADD THIS
                         'Alpha_Score': round(alpha_score, 1),
-                        'Primary_Metric': f"Alpha: {round(alpha_score, 1)}" # Unifies data for the UI
+                        'Primary_Metric': f"Alpha: {round(alpha_score, 1)}"
                     }
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -1004,7 +1005,8 @@ with tab_analyze:
                     "ROE": f"{funds.get('ROE', 0):.1%}",
                     "FCF_Yield": f"{funds.get('FCF_Yield', 0):.1%}",
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
-                    "EV_EBITDA": round(ev_raw, 1) if ev_raw > 0 else "N/A", # <--- THE FIX
+                    "EV_EBITDA": round(ev_raw, 1) if ev_raw > 0 else "N/A",
+                    "Debt_to_Equity": f"{funds.get('Debt_to_Equity', 999)}%", # <--- ADD THIS
                 }
 
                 # --- THE FIX: Add the missing Sector Health for Tab 3 ---

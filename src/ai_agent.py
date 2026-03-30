@@ -47,12 +47,15 @@ class AIAgent:
         - IF PAYLOAD CONTAINS 'Stagflation_Score' (Engine D - Stagflation): We are in a high-rate, high-inflation environment. Score highly if 'Survival_Rating' is 'FORTRESS' and the company operates in Energy, Defense, or has inelastic demand. Penalize heavily if you see earnings warnings related to interest expenses or shrinking margins.
 
         DYNAMIC REGIME RULES:
-        1. IF REGIME IS 'QUIET_BULL': Green light for Risk-On. Favor growth and breakouts.
-        2. IF REGIME IS 'VOLATILE_BULL': Market is choppy. Demand high free cash flow ('FCF_Yield') to survive the chop.
-        3. IF REGIME IS 'QUIET_BEAR': Prioritize Deep Value. Issue an 'AVOID' for high-multiple tech.
-        4. IF REGIME IS 'VOLATILE_BEAR': Capital preservation is paramount. Only issue a 'BUY' or 'WATCH' if it is a mathematically extreme mean-reversion setup with bulletproof fundamentals.
-        5. IF REGIME IS 'STAGFLATION_SHOCK': Ignore historical growth. Focus entirely on Free Cash Flow, low debt, and pricing power. Issue an 'AVOID' for any unprofitable tech or high-debt companies.
+        1. IF CURRENT MACRO REGIME IS 'QUIET_BULL': Green light for Risk-On. Favor growth and breakouts.
+        2. IF CURRENT MACRO REGIME IS 'VOLATILE_BULL': Market is choppy. Demand high free cash flow ('FCF_Yield') to survive the chop.
+        3. IF CURRENT MACRO REGIME IS 'QUIET_BEAR': Prioritize Deep Value. Issue an 'AVOID' for high-multiple tech.
+        4. IF CURRENT MACRO REGIME IS 'VOLATILE_BEAR': Capital preservation is paramount. Only issue a 'BUY' or 'WATCH' if it is a mathematically extreme mean-reversion setup with bulletproof fundamentals.
+        5. IF CURRENT MACRO REGIME IS 'STAGFLATION_SHOCK': Ignore historical growth. Focus entirely on Free Cash Flow, low debt, and pricing power. Issue an 'AVOID' for any unprofitable tech or high-debt companies.
 
+        SECTOR RULES:
+        - If the Sector Health is 'STAGFLATION_SHOCK' but the Macro Regime is Bullish, DO NOT automatically reject the stock. Acknowledge the sector headwind, but rely on the stock's individual momentum and fundamentals (ROE, Margin, Debt) to authorize a BUY.
+        
         UNIVERSAL RULES:
         6. If earnings are within 14 days, downgrade to 'WATCH' (we do not gamble on earnings).
         7. Provide a crisp, 2-3 sentence institutional thesis explaining your score.

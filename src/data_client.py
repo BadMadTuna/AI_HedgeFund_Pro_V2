@@ -187,12 +187,14 @@ class MarketDataClient:
             fcf = info.get('freeCashflow', 0)
             market_cap = info.get('marketCap', 1)
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
+            debt_to_equity = info.get('debtToEquity', 999) # <--- ADD THIS
             
             result = {
                 'ROE': roe if roe else 0,
                 'Gross_Margin': gross_margin if gross_margin else 0,
                 'EV_EBITDA': ev_ebitda if ev_ebitda else 0,
-                'FCF_Yield': fcf_yield if fcf_yield else 0
+                'FCF_Yield': fcf_yield if fcf_yield else 0,
+                'Debt_to_Equity': debt_to_equity # <--- ADD THIS
             }
             
             # Only cache if data isn't empty 0s
