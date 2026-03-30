@@ -498,7 +498,7 @@ with tab_port:
                     ticker = row_data['ticker']
                     news = data_client.get_news(ticker)
                     earn = data_client.get_earnings_date(ticker)
-                    funds = data_client.get_fundamentals(ticker) 
+                    funds = data_client.get_fundamentals(ticker) or {}
                     # THE FIX: Grab the dividend yield for the Guardian!
                     info = data_client._get_info_with_retry(ticker) or {}
                     funds['Dividend_Yield'] = info.get('dividendYield', 0.0)
@@ -654,7 +654,7 @@ with tab_radar:
                 
                 def fetch_fund(row):
                     t = row['Ticker']
-                    funds = data_client.get_fundamentals(t)
+                    funds = data_client.get_fundamentals(t) or {}
                     
                     smooth_pts = row['Smooth_Score'] * 10 
                     quality_pts = (funds['ROE'] * 50) + (funds['Gross_Margin'] * 20)
@@ -697,7 +697,7 @@ with tab_radar:
                     return None
                 
                 # Quality filter: Must have positive Free Cash Flow to survive the dip
-                funds = data_client.get_fundamentals(t)
+                funds = data_client.get_fundamentals(t) or {}
                 if funds['FCF_Yield'] <= 0: 
                     return None
                     
@@ -914,7 +914,7 @@ with tab_analyze:
                 st.error("Could not fetch data. Check ticker.")
             else:
                 # 1. Fetch Fundamentals & Text Data
-                funds = data_client.get_fundamentals(a_ticker)
+                funds = data_client.get_fundamentals(a_ticker) or {}
                 news = data_client.get_news(a_ticker)
                 earn = data_client.get_earnings_date(a_ticker)
                 

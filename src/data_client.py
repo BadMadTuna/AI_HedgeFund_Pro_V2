@@ -174,36 +174,35 @@ class MarketDataClient:
     # FUNDAMENTALS
     # ==========================================
     def get_fundamentals(self, ticker: str) -> dict:
-        # 12-hour cache for fundamentals
-        cached = self._check_cache('fund', ticker, ttl_seconds=43200)
-        if cached: return cached
-                
         try:
             info = self._get_info_with_retry(ticker)
             
+            # 1. THE SHIELD: If Yahoo blocked us or data is missing, gracefully abort.
+            if not info:
+                return None
+                
             roe = info.get('returnOnEquity', 0)
             gross_margin = info.get('grossMargins', 0)
             ev_ebitda = info.get('enterpriseToEbitda', 0)
+            
             fcf = info.get('freeCashflow', 0)
             market_cap = info.get('marketCap', 1)
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
-            debt_to_equity = info.get('debtToEquity', 999) # <--- ADD THIS
             
-            result = {
+            # Safely handle missing debt data
+            debt = info.get('debtToEquity')
+            debt_to_equity = debt if debt is not None else 999
+            
+            return {
                 'ROE': roe if roe else 0,
                 'Gross_Margin': gross_margin if gross_margin else 0,
                 'EV_EBITDA': ev_ebitda if ev_ebitda else 0,
                 'FCF_Yield': fcf_yield if fcf_yield else 0,
-                'Debt_to_Equity': debt_to_equity # <--- ADD THIS
+                'Debt_to_Equity': debt_to_equity
             }
-            
-            # Only cache if data isn't empty 0s
-            if result['FCF_Yield'] != 0 or result['ROE'] != 0:
-                self._save_cache('fund', ticker, result)
-                
-            return result
-        except Exception:
-            return {'ROE': 0, 'Gross_Margin': 0, 'EV_EBITDA': 0, 'FCF_Yield': 0}
+        except Exception as e:
+            # 2. THE FIX: Return None instead of a dictionary of zeros!
+            return None
 
     # ==========================================
     # GENERAL TECHNICALS
