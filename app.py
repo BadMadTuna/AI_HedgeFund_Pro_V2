@@ -707,7 +707,6 @@ with tab_radar:
                 if not rev_metrics or not rev_metrics.get('Is_Oversold_Setup'): 
                     return None
                 
-                --- NEW: THE FALLING KNIFE CIRCUIT BREAKER ---
                 tech = data_client.get_technicals(t)
                 hist = data_client._get_history_with_retry(t, "1y")
                 if not hist.empty:
