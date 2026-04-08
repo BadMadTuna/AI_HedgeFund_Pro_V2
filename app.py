@@ -37,6 +37,16 @@ if 'detected_regime' not in st.session_state or 'regime_metrics' not in st.sessi
             st.session_state.regime_metrics = {'current_price': 0, 'sma_50': 0, 'sma_200': 0, 'current_volatility': 0, 'baseline_volatility': 0}
             st.session_state.detected_action = "Maximum Defense"
 
+# --- NEW: GLOBAL FX INITIALIZATION ---
+if 'current_fx_rate' not in st.session_state:
+    with st.spinner("Syncing Global FX Rates..."):
+        try:
+            import yfinance as yf
+            eurusd_price = yf.Ticker("EURUSD=X").fast_info['last_price']
+            st.session_state.current_fx_rate = 1.0 / eurusd_price
+        except Exception:
+            st.session_state.current_fx_rate = 0.92 # Safe fallback if API drops
+
 # 2. Set the active current_regime to the detected one if it hasn't been manually overridden yet
 if 'current_regime' not in st.session_state:
     st.session_state.current_regime = st.session_state.detected_regime
@@ -108,7 +118,8 @@ with tab_port:
     
     if "live_port_df" not in st.session_state:
         st.session_state.live_port_df = None
-        st.session_state.current_fx_rate = 1.0
+        # Removed the placeholder st.session_state.current_fx_rate = 1.0
+        
     if "guardian_audit_df" not in st.session_state:
         st.session_state.guardian_audit_df = None
 
@@ -119,16 +130,14 @@ with tab_port:
     if refresh_clicked and not df_port.empty:
         with st.spinner("Fetching real-time IEX top-of-book prices via Tiingo..."):
             
-            # --- THE FIX: Bulletproof Yahoo Finance FX Fetcher ---
+            # --- Bulletproof Yahoo Finance FX Fetcher ---
             try:
                 import yfinance as yf
-                # EURUSD=X gives how many USD it takes to buy 1 EUR (e.g., 1.08)
                 eurusd_price = yf.Ticker("EURUSD=X").fast_info['last_price']
-                # We need USD to EUR multiplier
                 usd_to_eur = 1.0 / eurusd_price 
             except Exception as e:
-                st.warning(f"Could not fetch live FX rate ({e}). Defaulting to 0.92.")
-                usd_to_eur = 0.92
+                st.warning(f"Could not fetch live FX rate ({e}). Defaulting to global fallback.")
+                usd_to_eur = st.session_state.current_fx_rate
             # -----------------------------------------------------
 
             # 2. Sort tickers into US (Tiingo IEX) and EU (YFinance Fallback)
@@ -148,14 +157,10 @@ with tab_port:
             if us_tickers and api_key:
                 try:
                     iex_url = "https://api.tiingo.com/iex/"
-                    # Ask Tiingo for all US stocks in one single request
                     iex_res = requests.get(iex_url, params={'tickers': ",".join(us_tickers), 'token': api_key})
                     if iex_res.status_code == 200:
                         for item in iex_res.json():
-                            # Fallback chain: If 'last' is None, try 'tngoLast', then 'prevClose'
                             price = item.get('last') or item.get('tngoLast') or item.get('prevClose')
-                            
-                            # Safely check that we actually got a number before doing math
                             if price is not None and float(price) > 0:
                                 live_prices[item['ticker'].upper()] = float(price) * usd_to_eur
                 except Exception as e:
@@ -165,7 +170,6 @@ with tab_port:
             if eu_tickers:
                 for t in eu_tickers:
                     try:
-                        # Fast_info is significantly faster and less prone to blocking than full history
                         live_prices[t] = yf.Ticker(t).fast_info['last_price']
                     except: pass 
 
@@ -176,7 +180,7 @@ with tab_port:
                 t = row['ticker']
                 if t in live_prices and live_prices[t] > 0:
                     return live_prices[t]
-                return row['cost'] # Ultimate fallback if a stock is completely halted
+                return row['cost']
 
             live_df['Live Price (€)'] = live_df.apply(map_live_price, axis=1)
             live_df['Current Value (€)'] = live_df['Live Price (€)'] * live_df['quantity']
@@ -187,7 +191,7 @@ with tab_port:
             live_df.loc[is_stock, 'PnL (€)'] = (live_df['Live Price (€)'] - live_df['cost']) * live_df['quantity']
             live_df.loc[is_stock, 'PnL (%)'] = ((live_df['Live Price (€)'] - live_df['cost']) / live_df['cost']) * 100
             
-            # --- UPGRADED: SMART TREND & SOFT STOP TRACKER ---
+            # --- SMART TREND & SOFT STOP TRACKER ---
             live_df['Hard Stop (€)'] = 0.0
             live_df.loc[is_stock, 'Hard Stop (€)'] = live_df['cost'] * 0.92  # The -8% threshold
             live_df['Trend Status'] = 'OK'
@@ -217,7 +221,6 @@ with tab_port:
                     return '✅ SAFE'
                 
             live_df['EOD Status'] = live_df.apply(check_eod_status, axis=1)
-            # -------------------------------------------------
             
             st.session_state.live_port_df = live_df
             st.session_state.current_fx_rate = usd_to_eur
@@ -277,7 +280,6 @@ with tab_port:
                 
                 if st.form_submit_button("Execute Buy / Deposit"):
                     if b_ticker == 'EUR':
-                        # Bypass the purchase check and inject cash directly
                         try:
                             conn = sqlite3.connect("data/hedgefund.db")
                             cursor = conn.cursor()
@@ -297,7 +299,6 @@ with tab_port:
                         except Exception as e:
                             st.error(f"Failed to deposit cash: {e}")
                     else:
-                        # Standard stock purchase logic
                         if pm.execute_buy(b_ticker, b_price, b_qty, b_target):
                             st.success(f"Successfully added {b_qty} of {b_ticker}!")
                             time.sleep(1)
@@ -350,7 +351,6 @@ with tab_port:
 
         with st.expander("✏️ Fix Fat-Finger Mistake (Edit Price / Delete)"):
             with st.form("fix_form"):
-                # .strip() removes accidental spaces before or after the ticker
                 f_ticker = st.text_input("Ticker to Fix").upper().strip()
                 f_new_price = st.number_input("Correct Entry Price", min_value=0.0, value=0.0)
                 
@@ -362,16 +362,12 @@ with tab_port:
                     try:
                         conn = sqlite3.connect("data/hedgefund.db")
                         cursor = conn.cursor()
-                        # THE FIX: UPPER(status) catches both 'Open' and 'OPEN'
                         cursor.execute("UPDATE portfolio SET cost = ? WHERE ticker = ? AND UPPER(status) = 'OPEN'", (f_new_price, f_ticker))
-                        
-                        # Verify we actually updated a row before celebrating
                         if cursor.rowcount > 0:
                             conn.commit()
                             st.success(f"Fixed {f_ticker} entry price to €{f_new_price:.2f}!")
                         else:
                             st.error(f"Could not find an open position for {f_ticker}.")
-                            
                         conn.close()
                         time.sleep(1)
                         st.rerun()
@@ -383,13 +379,11 @@ with tab_port:
                         conn = sqlite3.connect("data/hedgefund.db")
                         cursor = conn.cursor()
                         cursor.execute("DELETE FROM portfolio WHERE ticker = ? AND UPPER(status) = 'OPEN'", (f_ticker,))
-                        
                         if cursor.rowcount > 0:
                             conn.commit()
                             st.warning(f"Completely erased {f_ticker} from open portfolio!")
                         else:
                             st.error(f"Could not find an open position for {f_ticker}.")
-                            
                         conn.close()
                         time.sleep(1)
                         st.rerun()
@@ -484,7 +478,6 @@ with tab_port:
         audit_df = st.session_state.live_port_df if st.session_state.live_port_df is not None else df_port
         stocks_to_audit = audit_df[audit_df['ticker'] != 'EUR']
         
-        # --- THREAD SAFETY FIX: Fetch regime in the Main Thread ---
         active_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
         
         if stocks_to_audit.empty:
@@ -493,17 +486,14 @@ with tab_port:
             with st.spinner(f"Guardian is running a concurrent audit ({active_regime.replace('_', ' ')}) on your holdings..."):
                 audit_results = []
                 
-                # 1. Define worker function to accept regime as an argument
                 def run_guardian(row_data, macro_regime):
                     ticker = row_data['ticker']
                     news = data_client.get_news(ticker)
                     earn = data_client.get_earnings_date(ticker)
                     funds = data_client.get_fundamentals(ticker) or {}
-                    # THE FIX: Grab the dividend yield for the Guardian!
                     info = data_client._get_info_with_retry(ticker) or {}
                     funds['Dividend_Yield'] = info.get('dividendYield', 0.0)
                     
-                    # Pass the explicit string, NOT st.session_state
                     v = agent.get_guardian_audit(ticker, row_data, news, earn, funds, macro_regime)
                     
                     return {
@@ -514,7 +504,6 @@ with tab_port:
                         'Execution Plan': v.get('proposed_stop', '')
                     }
 
-                # 2. Pass active_regime into the threads
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     futures = {executor.submit(run_guardian, row.to_dict(), active_regime): row for _, row in stocks_to_audit.iterrows()}
                     
@@ -528,7 +517,6 @@ with tab_port:
                             
                 st.session_state.guardian_audit_df = pd.DataFrame(audit_results)
 
-    # Note: Placed outside the button so it survives downloads
     if st.session_state.guardian_audit_df is not None:
         st.success("Audit Complete!")
         for _, row in st.session_state.guardian_audit_df.iterrows():
@@ -559,18 +547,15 @@ with tab_port:
 with tab_radar:
     st.header("🎯 Two-Tier AI Radar Scan")
     
-    # Initialize session state variables so data survives the download button
     if "scan_df_final" not in st.session_state:
         st.session_state.scan_df_final = None
         st.session_state.scan_top_20_alpha = None
     
     with st.expander("🌍 Layer 1: Macro Regime Classifier (The Brain)", expanded=True):
-        # Read from the globally synchronized state (which includes manual overrides)
         current_reg = st.session_state.current_regime
         metrics = st.session_state.regime_metrics
         action = st.session_state.regime_action
         
-        # Dynamic UI Styling based on state
         regime_colors = {
             "QUIET_BULL": "🟢",
             "VOLATILE_BULL": "🟡",
@@ -588,13 +573,11 @@ with tab_radar:
         st.caption("Underlying SPY Technical Diagnostics:")
         c1, c2, c3, c4 = st.columns(4)
         
-        # Trend Metrics
         trend_color = "normal" if metrics['current_price'] > metrics['sma_200'] else "inverse"
         c1.metric("SPY Price", f"${metrics['current_price']}", 
                   f"{'Above' if trend_color=='normal' else 'Below'} 200 SMA", delta_color=trend_color)
         c2.metric("SPY 50-Day SMA", f"${metrics['sma_50']}")
         
-        # Volatility Metrics
         vol_color = "inverse" if metrics['current_volatility'] > metrics['baseline_volatility'] else "normal"
         c3.metric("Realized Volatility (Rolling 20-Day)", f"{metrics['current_volatility']}%", 
                   f"Baseline: {metrics['baseline_volatility']}%", delta_color=vol_color)
@@ -605,9 +588,7 @@ with tab_radar:
     tickers_to_scan = get_sp500_tickers()
 
     if st.button("🚀 Launch Multi-Engine Alpha Scan", type="primary"):
-        # Fetch the current regime (which now correctly respects the override)
         current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
-        
         st.subheader(f"⚙️ Layer 2 Dispatch: Adapting to {current_regime.replace('_', ' ')}")
         candidates_df = pd.DataFrame()
         
@@ -655,11 +636,7 @@ with tab_radar:
                 def fetch_fund(row):
                     t = row['Ticker']
                     funds = data_client.get_fundamentals(t) or {}
-                    
-                    # --- THE FIX: If Yahoo is blocked, skip the stock immediately ---
-                    if not funds: 
-                        return None
-                    # ----------------------------------------------------------------
+                    if not funds: return None
                     
                     smooth_pts = row['Smooth_Score'] * 10 
                     quality_pts = (funds.get('ROE', 0) * 50) + (funds.get('Gross_Margin', 0) * 20)
@@ -675,6 +652,7 @@ with tab_radar:
                         'Margin': f"{funds.get('Gross_Margin', 0):.1%}",
                         'EV/EBITDA': round(funds.get('EV_EBITDA', 0), 1) if funds.get('EV_EBITDA', 0) > 0 else "N/A",
                         'Debt_to_Equity': f"{funds.get('Debt_to_Equity', 999)}%", 
+                        'FCF_Yield': f"{funds.get('FCF_Yield', 0):.1%}",  # <--- THE FIX for Engine A
                         'Alpha_Score': round(alpha_score, 1),
                         'Primary_Metric': f"Alpha: {round(alpha_score, 1)}"
                     }
@@ -686,13 +664,11 @@ with tab_radar:
                         if res: fund_results.append(res)
                         fund_pb.progress((i + 1) / len(top_50_df))
                 
-                # --- THE FIX: Only sort if we actually got data back ---
                 if fund_results:
                     candidates_df = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False).head(20)
                 else:
                     candidates_df = pd.DataFrame()
                     st.warning("⚠️ Could not fetch fundamental data for any candidates. Yahoo Finance may be rate-limiting your IP.")
-                # --------------------------------------------------------
 
         # ==========================================
         # ENGINE B: MEAN REVERSION (VOLATILE REGIMES)
@@ -707,27 +683,24 @@ with tab_radar:
                 if not rev_metrics or not rev_metrics.get('Is_Oversold_Setup'): 
                     return None
                 
-                tech = data_client.get_technicals(t)
+                # --- THE FIX: Falling Knife Circuit Breaker ---
                 hist = data_client._get_history_with_retry(t, "1y")
-                if not hist.empty:
+                if not hist.empty and len(hist) >= 200:
                     sma_50 = hist['Close'].rolling(50).mean().iloc[-1]
                     sma_200 = hist['Close'].rolling(200).mean().iloc[-1]
-                    # If the 50-day is below the 200-day, the structural trend is dead. Abort.
                     if sma_50 < sma_200:
                         return None
                 
-                # --- THE FIX: Safely check fundamentals ---
                 funds = data_client.get_fundamentals(t) or {}
                 if not funds or funds.get('FCF_Yield', 0) <= 0: 
                     return None
-                # ------------------------------------------
                     
                 sector = data_client.get_sector_for_ticker(t)
                 return {
                     **rev_metrics,
                     'Sector': sector,
-                    'FCF_Yield': f"{funds['FCF_Yield']:.1%}",
-                    'ROE': f"{funds['ROE']:.1%}",
+                    'FCF_Yield': f"{funds.get('FCF_Yield', 0):.1%}",
+                    'ROE': f"{funds.get('ROE', 0):.1%}",
                     'Price': rev_metrics['Current_Price'],
                     'Primary_Metric': f"Upside to Mean: {rev_metrics['Upside_to_Mean']:.1%}"
                 }
@@ -757,18 +730,18 @@ with tab_radar:
                 val_metrics = data_client.get_deep_value_metrics(t)
                 if not val_metrics: return None
                 
-                # STRICT BEAR MARKET FILTERS: 
-                # Must pay a dividend > 2%, or have an EV/EBITDA < 12 with positive cash flow
                 if val_metrics['Dividend_Yield'] < 0.02 and (val_metrics['EV_EBITDA'] > 12 or val_metrics['FCF_Yield'] <= 0):
                     return None
                     
                 sector = data_client.get_sector_for_ticker(t)
+                funds = data_client.get_fundamentals(t) or {}
+                
                 return {
                     **val_metrics,
                     'Sector': sector,
                     'Price': val_metrics['Current_Price'],
                     'Primary_Metric': f"Value Score: {val_metrics['Value_Score']} | Yield: {val_metrics['Dividend_Yield']:.1%}",
-                    'ROE': 'N/A' # Not the focus here
+                    'ROE': f"{funds.get('ROE', 0):.1%}" # <--- THE FIX for Engine C
                 }
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -785,42 +758,49 @@ with tab_radar:
                 st.info("No companies met the strict deep value and yield requirements today.")
 
         # ==========================================
-        # ENGINE D: STAGFLATION HUNTER (SHOCK REGIME)
+        # ENGINE D: DEFENSIVE MOMENTUM (STAGFLATION + TREND)
         # ==========================================
         elif current_regime == "STAGFLATION_SHOCK":
-            st.error("⚫ Deploying ENGINE D: Stagflation & Survival Hunter...")
+            st.error("⚫ Deploying ENGINE D: Defensive Momentum Hunter (Survival + Trend)...")
             stag_results = []
             progress_bar = st.progress(0)
             
-            def fetch_stagflation(t):
+            def fetch_hybrid_stagflation(t):
                 stag_metrics = data_client.get_stagflation_metrics(t)
                 if not stag_metrics: return None
                 
-                # STRICT SURVIVAL FILTERS: 
-                # Must survive the Debt Guillotine (Score > 0) AND have > 5% FCF Yield
                 if stag_metrics['Stagflation_Score'] == 0 or stag_metrics['FCF_Yield'] < 0.05:
                     return None
+                
+                mom_metrics = data_client.get_smart_momentum(t)
+                if not mom_metrics or mom_metrics['Smooth_Score'] <= 0:
+                    return None 
                     
+                hybrid_score = stag_metrics['Stagflation_Score'] + (mom_metrics['Smooth_Score'] * 500)
+                funds = data_client.get_fundamentals(t) or {}
+                
                 return {
-                    **stag_metrics,
+                    **stag_metrics, 
                     'Price': stag_metrics['Current_Price'],
                     'Debt_to_Equity': f"{stag_metrics['Debt_to_Equity']}%", 
-                    'Primary_Metric': f"Stag Score: {stag_metrics['Stagflation_Score']} | FCF: {stag_metrics['FCF_Yield']:.1%}",
-                    'ROE': f"Margins: {stag_metrics['Gross_Margins']:.1%}" 
+                    'Primary_Metric': f"Hybrid Score: {hybrid_score:.1f}",
+                    'Trend_Smoothness': f"{mom_metrics['Trend_Smoothness']:.2f}",
+                    'ROE': f"{funds.get('ROE', 0):.1%}", # <--- THE FIX for Engine D
+                    'Hybrid_Score': hybrid_score 
                 }
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(fetch_stagflation, t): t for t in tickers_to_scan}
+                futures = {executor.submit(fetch_hybrid_stagflation, t): t for t in tickers_to_scan}
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
                     res = future.result()
                     if res: stag_results.append(res)
                     progress_bar.progress((i + 1) / len(tickers_to_scan))
                     
             if stag_results:
-                candidates_df = pd.DataFrame(stag_results).sort_values(by="Stagflation_Score", ascending=False).head(20)
-                st.dataframe(candidates_df[['Ticker', 'Sector', 'Survival_Rating', 'FCF_Yield', 'Debt_to_Equity', 'Gross_Margins', 'Stagflation_Score']], use_container_width=True)
+                candidates_df = pd.DataFrame(stag_results).sort_values(by="Hybrid_Score", ascending=False).head(20)
+                st.dataframe(candidates_df[['Ticker', 'Sector', 'Survival_Rating', 'FCF_Yield', 'Debt_to_Equity', 'Trend_Smoothness', 'Primary_Metric']], use_container_width=True)
             else:
-                st.info("No companies met the strict survival, low-debt, and cash flow requirements today.")
+                st.info("No companies met the strict survival, cash flow, AND positive trend requirements today.")
 
         # ==========================================
         # TIER 3: AI HUNTER (UNIVERSAL DEEP DIVE)
@@ -830,7 +810,6 @@ with tab_radar:
             final_results = []
             ai_progress = st.progress(0)
 
-            # Define worker function to accept regime as an argument
             def fetch_ai_verdict(row_data, macro_regime):
                 t = row_data['Ticker']
                 news = data_client.get_news(t)
@@ -845,7 +824,6 @@ with tab_radar:
                 row_data["Analyst_Coverage_Count"] = funds.get('Analyst_Count', 0)
                 # ----------------------------------------------------------------------
 
-                # Ask the AI using the explicitly passed regime
                 ai_res = agent.get_hunter_verdict(t, row_data, news, earn, macro_regime)
                 
                 return {
@@ -855,9 +833,7 @@ with tab_radar:
                     "Earnings": earn, "Reasoning": ai_res.get('reasoning', '')
                 }
 
-            # Blast 5 concurrent requests at a time
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # current_regime was already fetched at the top of the button block
                 futures = {executor.submit(fetch_ai_verdict, row.to_dict(), current_regime): row for _, row in candidates_df.iterrows()}
                 
                 for i, future in enumerate(concurrent.futures.as_completed(futures)):
@@ -872,12 +848,9 @@ with tab_radar:
 
             if final_results:
                 df_final = pd.DataFrame(final_results).sort_values(by="AI Score", ascending=False)
-                
-                # Save results to session state so they persist and the outer UI blocks render properly
                 st.session_state.scan_df_final = df_final
                 st.session_state.scan_top_20_alpha = candidates_df
 
-    # --- Render Scan UI out here so it survives the download button refresh ---
     if st.session_state.scan_df_final is not None:
         df_final = st.session_state.scan_df_final
         top_20_alpha = st.session_state.scan_top_20_alpha
@@ -943,12 +916,10 @@ with tab_analyze:
             if not tech:
                 st.error("Could not fetch data. Check ticker.")
             else:
-                # 1. Fetch Fundamentals & Text Data
                 funds = data_client.get_fundamentals(a_ticker) or {}
                 news = data_client.get_news(a_ticker)
                 earn = data_client.get_earnings_date(a_ticker)
                 
-                # 2. Merge Technicals + Fundamentals
                 tech_fund_data = {
                     **tech,
                     'ROE': f"{funds.get('ROE', 0):.1%}",
@@ -956,7 +927,6 @@ with tab_analyze:
                     'EV/EBITDA': round(funds.get('EV_EBITDA', 0), 1)
                 }
                 
-                # 3. Display the expanded data metrics
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Current Price", f"${tech['Price']}")
                 c2.metric("RSI (14)", tech['RSI'])
@@ -964,7 +934,6 @@ with tab_analyze:
                 c4.metric("EV/EBITDA", tech_fund_data['EV/EBITDA'])
                 c5.metric("Earnings", earn)
                 
-                # --- NEW: 6-MONTH PRICE CHART WITH TRENDLINES (TIINGO POWERED) ---
                 import requests
                 from datetime import datetime, timedelta
                 try:
@@ -975,7 +944,6 @@ with tab_analyze:
                     hist = pd.DataFrame()
                     
                     if "." in a_ticker:
-                        # EU Stock Fallback (Tiingo free tier is mostly US equities)
                         import yfinance as yf
                         hist_yf = yf.Ticker(a_ticker).history(period="6m")
                         if not hist_yf.empty:
@@ -983,7 +951,6 @@ with tab_analyze:
                                 hist_yf.index = hist_yf.index.tz_localize(None)
                             hist = hist_yf[['Close']].rename(columns={'Close': 'close'})
                     else:
-                        # US Stock -> Tiingo API (Immune to IP blocking)
                         url = f"https://api.tiingo.com/tiingo/daily/{a_ticker}/prices"
                         res = requests.get(url, params={'startDate': start_str, 'token': api_key})
                         if res.status_code == 200 and len(res.json()) > 0:
@@ -992,46 +959,42 @@ with tab_analyze:
                             hist.set_index('date', inplace=True)
                             
                     if not hist.empty and 'close' in hist.columns:
-                        # Calculate Institutional Moving Averages
                         hist['20-Day SMA'] = hist['close'].rolling(window=20).mean()
                         hist['50-Day SMA'] = hist['close'].rolling(window=50).mean()
                         
-                        # Format the DataFrame for the chart
                         chart_data = hist[['close', '20-Day SMA', '50-Day SMA']].copy()
                         chart_data.rename(columns={'close': 'Price'}, inplace=True)
                         
                         st.markdown("### 📈 6-Month Price Action & Trendlines")
                         try:
-                            # Streamlit 1.33+ supports custom line colors
                             st.line_chart(chart_data, color=["#10b981", "#f59e0b", "#3b82f6"])
                         except TypeError:
-                            # Fallback for older Streamlit versions
                             st.line_chart(chart_data)
                     else:
                         st.warning("Could not load enough price history to draw the chart.")
                         
                 except Exception as e:
                     st.error(f"Chart failed to load: {e}")
-                # ------------------------------------------------
                 
                 st.markdown("### 📰 Recent News")
                 st.text(news)
                 
                 st.markdown("### 🧠 Quantamental AI Verdict")
                 
-                # --- THE FIX: Regime-Filtered "Deep Dive" Payload ---
                 tech = data_client.get_technicals(a_ticker) or {}
                 funds = data_client.get_fundamentals(a_ticker) or {}
                 mom_metrics = data_client.get_smart_momentum(a_ticker) or {}
                 rev_metrics = data_client.get_mean_reversion_metrics(a_ticker) or {}
                 val_metrics = data_client.get_deep_value_metrics(a_ticker) or {}
                 
-                # 1. Base Fundamentals (Always include these)
                 ev_raw = funds.get('EV_EBITDA', 0)
-                
-                # 1. Base Fundamentals (Always include these)
-                ev_raw = funds.get('EV_EBITDA', 0)
-                
+                sector_etf = data_client.get_sector_for_ticker(a_ticker)
+                sector_regime = data_client.get_market_regime(sector_etf)
+                info = data_client._get_info_with_retry(a_ticker) or {}
+                div_rate = info.get('dividendRate') or 0.0
+                curr_price = tech.get('Current_Price') or 1.0
+                div_raw = div_rate / curr_price if curr_price > 0 else 0.0
+
                 tech_fund_data = {
                     "Price": tech.get('Current_Price', 0),
                     "RSI": tech.get('RSI_14', 50),
@@ -1040,54 +1003,47 @@ with tab_analyze:
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
                     "EV_EBITDA": round(ev_raw, 1) if ev_raw > 0 else "N/A",
                     "Debt_to_Equity": f"{funds.get('Debt_to_Equity', 999)}%", 
-                    "Rev_Growth": f"{funds.get('Rev_Growth', 0):.1%}",
                     
-                    # --- NEW: THE SENTIMENT PAYLOAD ---
+                    # --- NEW DATA ADDED TO THE AI PAYLOAD ---
+                    "Rev_Growth": f"{funds.get('Rev_Growth', 0):.1%}",
+                    "EBITDA_Margins": f"{funds.get('EBITDA_Margins', 0):.1%}",
                     "Wall_Street_Rating": funds.get('Analyst_Rating', 'UNKNOWN'),
                     "Consensus_Price_Target": f"${funds.get('Target_Price', 0.0):.2f}",
-                    "Analyst_Coverage_Count": funds.get('Analyst_Count', 0)
+                    "Analyst_Coverage_Count": funds.get('Analyst_Count', 0),
+                    
+                    # Missing fields originally required by the prompt
+                    "Sector_Health": sector_regime['regime'] if sector_regime else "Unknown",
+                    "Dividend_Yield": f"{div_raw:.1%}"
                 }
-
-                # --- THE FIX: Add the missing Sector Health for Tab 3 ---
-                sector_etf = data_client.get_sector_for_ticker(a_ticker)
-                sector_regime = data_client.get_market_regime(sector_etf)
-                tech_fund_data["Sector_Health"] = sector_regime['regime'] if sector_regime else "Unknown"
-                # --------------------------------------------------------
-
-                # --- THE FIX: Bulletproof Dividend Math ---
-                info = data_client._get_info_with_retry(a_ticker) or {}
-                div_rate = info.get('dividendRate') or 0.0
-                curr_price = tech.get('Current_Price') or 1.0
                 
-                # Manually calculate yield to bypass Yahoo's API hallucination
-                div_raw = div_rate / curr_price if curr_price > 0 else 0.0
-                tech_fund_data["Dividend_Yield"] = f"{div_raw:.1%}"
-                
-                # 2. Add Engine-Specific Triggers based on current Regime
                 current_regime = st.session_state.get('current_regime', 'VOLATILE_BEAR')
                 
                 if current_regime == "QUIET_BULL":
-                    # Only trigger Engine A logic (Momentum)
                     tech_fund_data["Smooth_Score"] = mom_metrics.get('Smooth_Score', 0)
                     
                 elif current_regime in ["VOLATILE_BULL", "VOLATILE_BEAR"]:
-                    # Only trigger Engine B logic (Mean Reversion)
                     upside_raw = rev_metrics.get('Upside_to_Mean', 0)
                     tech_fund_data["Upside_to_Mean"] = f"{upside_raw:.1%}" if upside_raw else "0.0%"
                     tech_fund_data["Lower_BB"] = rev_metrics.get('Lower_BB', 0)
                     tech_fund_data["Is_Oversold_Setup"] = rev_metrics.get('Is_Oversold_Setup', False)
                     
                 elif current_regime == "QUIET_BEAR":
-                    # Only trigger Engine C logic (Value/Yield)
                     tech_fund_data["Value_Score"] = val_metrics.get('Value_Score', 0)
 
                 elif current_regime == "STAGFLATION_SHOCK":
                     stag_metrics = data_client.get_stagflation_metrics(a_ticker) or {}
+                    mom_metrics = data_client.get_smart_momentum(a_ticker) or {}
+                    
                     tech_fund_data["Stagflation_Score"] = stag_metrics.get('Stagflation_Score', 0)
                     tech_fund_data["Survival_Rating"] = stag_metrics.get('Survival_Rating', 'Unknown')
                     tech_fund_data["Debt_to_Equity"] = f"{stag_metrics.get('Debt_to_Equity', 999)}%"
+                    
+                    # --- THE FIX: Inject Hybrid Momentum Math into Tab 3 ---
+                    tech_fund_data["Smooth_Score"] = mom_metrics.get('Smooth_Score', 0)
+                    tech_fund_data["Trend_Smoothness"] = mom_metrics.get('Trend_Smoothness', 0)
+                    hybrid_score = stag_metrics.get('Stagflation_Score', 0) + (mom_metrics.get('Smooth_Score', 0) * 500)
+                    tech_fund_data["Hybrid Score"] = round(hybrid_score, 1)
                 
-                # 3. Run the AI Analyst
                 ai_res = agent.get_hunter_verdict(a_ticker, tech_fund_data, news, earn, current_regime)
                 
                 if ai_res.get('verdict') == "BUY": st.success(f"Score: {ai_res.get('score')} | Verdict: BUY")
@@ -1096,7 +1052,6 @@ with tab_analyze:
                 
                 st.write(ai_res.get('reasoning'))
 
-                # --- NEW: EXACT TRADE SIZING & ATR STOP LOSS ---
                 st.markdown("### ⚖️ Institutional Trade Sizing (1% Risk)")
                 equity_summary = pm.get_equity_summary()
                 ACCOUNT_SIZE = equity_summary.get('total_equity', 100000)
@@ -1117,7 +1072,6 @@ with tab_analyze:
                                f"- Total Capital Deployed: **€{invest_eur:,.2f}**\n"
                                f"- Hard Stop Loss: **€{stop_eur:,.2f}** (Calculated at 2x ATR)\n"
                                f"- Max Risk if stopped out: **€{risk_eur:,.2f}**")
-                # -----------------------------------------------
 
 with tab_journal:
     st.header("📓 Trade Journal")
