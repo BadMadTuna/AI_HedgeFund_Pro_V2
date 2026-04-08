@@ -186,9 +186,14 @@ class MarketDataClient:
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
             debt_to_equity = info.get('debtToEquity', 999)
             
-            # --- NEW: GROWTH & DECAY METRICS ---
+            # Growth & Decay Metrics (from our previous fix)
             rev_growth = info.get('revenueGrowth', 0) 
             ebitda_margins = info.get('ebitdaMargins', 0)
+            
+            # --- NEW: INSTITUTIONAL SENTIMENT EDGE ---
+            analyst_rating = info.get('recommendationKey', 'unknown').upper()
+            target_price = info.get('targetMeanPrice', 0.0)
+            num_analysts = info.get('numberOfAnalystOpinions', 0)
 
             return {
                 'ROE': roe if roe else 0,
@@ -197,7 +202,10 @@ class MarketDataClient:
                 'FCF_Yield': fcf_yield if fcf_yield else 0,
                 'Debt_to_Equity': debt_to_equity,
                 'Rev_Growth': rev_growth,
-                'EBITDA_Margins': ebitda_margins
+                'EBITDA_Margins': ebitda_margins,
+                'Analyst_Rating': analyst_rating,
+                'Target_Price': target_price,
+                'Analyst_Count': num_analysts
             }
         except Exception:
             return None
@@ -485,15 +493,22 @@ class MarketDataClient:
         if not self.api_key: return "No News API Key provided."
         try:
             url = "https://api.tiingo.com/tiingo/news"
-            params = {'tickers': ticker, 'limit': 3, 'token': self.api_key}
+            # Increased limit to 5 to catch more diverse sentiment
+            params = {'tickers': ticker, 'limit': 5, 'token': self.api_key}
             res = requests.get(url, params=params)
             
             if res.status_code == 200:
                 articles = res.json()
                 if articles:
-                    return "\n".join([f"- {a['title']}" for a in articles])
+                    news_lines = []
+                    for a in articles:
+                        title = a.get('title', 'No Title')
+                        # Grab the first 150 characters of the description for context
+                        desc = str(a.get('description', ''))[:150].replace('\n', ' ')
+                        news_lines.append(f"- {title} | Context: {desc}...")
+                    return "\n".join(news_lines)
             return "No recent major news."
-        except:
+        except Exception:
             return "Failed to fetch news."
 
     def get_earnings_date(self, ticker: str) -> str:

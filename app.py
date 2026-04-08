@@ -836,6 +836,15 @@ with tab_radar:
                 news = data_client.get_news(t)
                 earn = data_client.get_earnings_date(t)
                 
+                # --- NEW: Inject the Sentiment & Growth Edge into the Radar payload ---
+                funds = data_client.get_fundamentals(t) or {}
+                row_data["Rev_Growth"] = f"{funds.get('Rev_Growth', 0):.1%}"
+                row_data["EBITDA_Margins"] = f"{funds.get('EBITDA_Margins', 0):.1%}"
+                row_data["Wall_Street_Rating"] = funds.get('Analyst_Rating', 'UNKNOWN')
+                row_data["Consensus_Price_Target"] = f"${funds.get('Target_Price', 0.0):.2f}"
+                row_data["Analyst_Coverage_Count"] = funds.get('Analyst_Count', 0)
+                # ----------------------------------------------------------------------
+
                 # Ask the AI using the explicitly passed regime
                 ai_res = agent.get_hunter_verdict(t, row_data, news, earn, macro_regime)
                 
@@ -1031,6 +1040,12 @@ with tab_analyze:
                     "Gross_Margin": f"{funds.get('Gross_Margin', 0):.1%}",
                     "EV_EBITDA": round(ev_raw, 1) if ev_raw > 0 else "N/A",
                     "Debt_to_Equity": f"{funds.get('Debt_to_Equity', 999)}%", 
+                    "Rev_Growth": f"{funds.get('Rev_Growth', 0):.1%}",
+                    
+                    # --- NEW: THE SENTIMENT PAYLOAD ---
+                    "Wall_Street_Rating": funds.get('Analyst_Rating', 'UNKNOWN'),
+                    "Consensus_Price_Target": f"${funds.get('Target_Price', 0.0):.2f}",
+                    "Analyst_Coverage_Count": funds.get('Analyst_Count', 0)
                 }
 
                 # --- THE FIX: Add the missing Sector Health for Tab 3 ---
