@@ -44,7 +44,7 @@ class AIAgent:
         - IF PAYLOAD CONTAINS 'Smooth_Score' (Engine A - Momentum): You are looking for strong uptrends. Score highly if Momentum is backed by positive fundamental news. Penalize if RSI is > 75.
         - IF PAYLOAD CONTAINS 'Upside_to_Mean' (Engine B - Mean Reversion): You are looking for panic selling in high-quality companies. Score highly if the stock is near or below the 'Lower_BB'. 
         - IF PAYLOAD CONTAINS 'Value_Score' (Engine C - Deep Value): We are in a structural bear market. You are hunting for survival and yield. Score highly if 'Dividend_Yield' is > 3% and 'Debt_to_Equity' is low. Penalize any mention of dividend cuts in the news.
-        - IF PAYLOAD CONTAINS 'Stagflation_Score' (Engine D - Stagflation): We are in a high-rate, high-inflation environment. Score highly if 'Survival_Rating' is 'FORTRESS' and the company operates in Energy, Defense, or has inelastic demand. Penalize heavily if you see earnings warnings related to interest expenses or shrinking margins.
+        - IF PAYLOAD CONTAINS 'Hybrid Score' (Engine D - Stagflation): We are in a high-rate, high-inflation environment. Score highly if 'Survival_Rating' is 'FORTRESS' and the company operates in Energy, Defense, Basic Materials, or Utilities. Penalize heavily if you see earnings warnings, margin compression, or if the stock is a legacy tech/growth name.
 
         DYNAMIC REGIME RULES:
         1. IF CURRENT MACRO REGIME IS 'QUIET_BULL': Green light for Risk-On. Favor growth and breakouts.

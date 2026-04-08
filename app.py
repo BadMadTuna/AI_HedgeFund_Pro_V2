@@ -773,8 +773,9 @@ with tab_radar:
                     return None
                 
                 mom_metrics = data_client.get_smart_momentum(t)
-                if not mom_metrics or mom_metrics['Smooth_Score'] <= 0:
-                    return None 
+                # Require a mathematically significant uptrend (Smooth_Score > 0.05)
+                if not mom_metrics or mom_metrics['Smooth_Score'] < 0.05:
+                    return None
                     
                 hybrid_score = stag_metrics['Stagflation_Score'] + (mom_metrics['Smooth_Score'] * 500)
                 funds = data_client.get_fundamentals(t) or {}

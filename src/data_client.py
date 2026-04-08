@@ -399,10 +399,15 @@ class MarketDataClient:
             # Add the macro/geopolitical tailwind premium
             score += sector_premium
             
-            # THE GUILLOTINE: If Debt-to-Equity is over 40%, the company is a restructuring risk. Slash score to zero.
+            # THE GUILLOTINE: 
+            # 1. Debt over 40% is a restructuring risk. 
+            # 2. Financials/Insurance have artificially inflated FCF due to "float". Block them.
             if debt_to_equity > 40:
                 score = 0
                 survival_rating = "HIGH RISK (Debt > 40%)"
+            elif sector == 'Financial Services':
+                score = 0
+                survival_rating = "ACCOUNTING DISTORTION (Float)"
             else:
                 survival_rating = "FORTRESS"
 
