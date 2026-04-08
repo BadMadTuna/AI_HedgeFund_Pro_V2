@@ -707,6 +707,16 @@ with tab_radar:
                 if not rev_metrics or not rev_metrics.get('Is_Oversold_Setup'): 
                     return None
                 
+                --- NEW: THE FALLING KNIFE CIRCUIT BREAKER ---
+                tech = data_client.get_technicals(t)
+                hist = data_client._get_history_with_retry(t, "1y")
+                if not hist.empty:
+                    sma_50 = hist['Close'].rolling(50).mean().iloc[-1]
+                    sma_200 = hist['Close'].rolling(200).mean().iloc[-1]
+                    # If the 50-day is below the 200-day, the structural trend is dead. Abort.
+                    if sma_50 < sma_200:
+                        return None
+                
                 # --- THE FIX: Safely check fundamentals ---
                 funds = data_client.get_fundamentals(t) or {}
                 if not funds or funds.get('FCF_Yield', 0) <= 0: 
@@ -1007,6 +1017,9 @@ with tab_analyze:
                 mom_metrics = data_client.get_smart_momentum(a_ticker) or {}
                 rev_metrics = data_client.get_mean_reversion_metrics(a_ticker) or {}
                 val_metrics = data_client.get_deep_value_metrics(a_ticker) or {}
+                
+                # 1. Base Fundamentals (Always include these)
+                ev_raw = funds.get('EV_EBITDA', 0)
                 
                 # 1. Base Fundamentals (Always include these)
                 ev_raw = funds.get('EV_EBITDA', 0)

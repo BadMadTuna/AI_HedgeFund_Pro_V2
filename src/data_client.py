@@ -176,32 +176,30 @@ class MarketDataClient:
     def get_fundamentals(self, ticker: str) -> dict:
         try:
             info = self._get_info_with_retry(ticker)
-            
-            # 1. THE SHIELD: If Yahoo blocked us or data is missing, gracefully abort.
-            if not info:
-                return None
+            if not info: return None
                 
             roe = info.get('returnOnEquity', 0)
             gross_margin = info.get('grossMargins', 0)
             ev_ebitda = info.get('enterpriseToEbitda', 0)
-            
             fcf = info.get('freeCashflow', 0)
             market_cap = info.get('marketCap', 1)
             fcf_yield = fcf / market_cap if market_cap and fcf else 0
+            debt_to_equity = info.get('debtToEquity', 999)
             
-            # Safely handle missing debt data
-            debt = info.get('debtToEquity')
-            debt_to_equity = debt if debt is not None else 999
-            
+            # --- NEW: GROWTH & DECAY METRICS ---
+            rev_growth = info.get('revenueGrowth', 0) 
+            ebitda_margins = info.get('ebitdaMargins', 0)
+
             return {
                 'ROE': roe if roe else 0,
                 'Gross_Margin': gross_margin if gross_margin else 0,
                 'EV_EBITDA': ev_ebitda if ev_ebitda else 0,
                 'FCF_Yield': fcf_yield if fcf_yield else 0,
-                'Debt_to_Equity': debt_to_equity
+                'Debt_to_Equity': debt_to_equity,
+                'Rev_Growth': rev_growth,
+                'EBITDA_Margins': ebitda_margins
             }
-        except Exception as e:
-            # 2. THE FIX: Return None instead of a dictionary of zeros!
+        except Exception:
             return None
 
     # ==========================================

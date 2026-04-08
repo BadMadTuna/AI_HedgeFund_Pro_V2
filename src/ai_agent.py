@@ -58,7 +58,12 @@ class AIAgent:
         
         UNIVERSAL RULES:
         6. If earnings are within 14 days, downgrade to 'WATCH' (we do not gamble on earnings).
-        7. Provide a crisp, 2-3 sentence institutional thesis explaining your score.
+        7. THE VALUE TRAP RULE: If a stock has a high Dividend or is deeply oversold, but its 'Rev_Growth' is negative (< 0) or its 'EBITDA_Margins' are shrinking, you MUST aggressively penalize the score and consider issuing an 'AVOID'. High yields do not justify a dying core business.
+        8. THE SENTIMENT RULE: Review the 'Wall_Street_Rating' and 'Consensus_Price_Target'. 
+           - If Wall Street rates it a 'SELL' or 'UNDERPERFORM', demand extremely high quantitative proof before issuing a 'BUY'. 
+           - If the current price is significantly above the 'Consensus_Price_Target', penalize the score as the stock is likely overvalued by institutional standards.
+        9. THE NEWS CONTEXT RULE: Read the provided news context snippets. Downgrade the score if you see mentions of "downgrade", "lawsuit", "margin pressure", or "guidance cut".
+        10. Provide a crisp, 2-3 sentence institutional thesis explaining your score, explicitly mentioning Wall Street consensus if relevant.
         
         You MUST respond ONLY in this exact JSON format. Do not include any other text:
         {{
