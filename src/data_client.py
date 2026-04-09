@@ -48,7 +48,10 @@ class MarketDataClient:
             try:
                 hist = yf.Ticker(ticker).history(period=period)
                 if not hist.empty:
-                    return hist
+                    # --- THE FIX: Drop empty trailing rows (common yfinance bug) ---
+                    hist = hist.dropna(subset=['Close'])
+                    if not hist.empty:
+                        return hist
             except Exception:
                 pass
             time.sleep(0.3 * (attempt + 1)) # Sleep and try again

@@ -103,6 +103,31 @@ st.sidebar.info(f"🤖 **Auto-Detected Math:**\n{st.session_state.detected_regim
 if st.session_state.current_regime != st.session_state.detected_regime:
     st.sidebar.warning("⚠️ Manual Override Active! The AI is currently ignoring the auto-detected trend.")
 
+st.sidebar.divider()
+st.sidebar.header("🛠️ Debug & Maintenance")
+
+if st.sidebar.button("🗑️ Clear All Caches (Hard Reset)", use_container_width=True):
+    # 1. Clear your custom Market Data Client memory banks
+    if 'mdc_caches' in st.session_state:
+        st.session_state.mdc_caches = {
+            'regime': {}, 'fund': {}, 'tech': {}, 
+            'mom': {}, 'rev': {}, 'val': {}, 'stag': {}, 'sector': {}
+        }
+    
+    # 2. Clear Streamlit's internal @st.cache_data and @st.cache_resource decorators
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    
+    # 3. Wipe specific session state variables to force a full UI re-initialization
+    keys_to_nuke = ['detected_regime', 'regime_metrics', 'live_port_df', 'scan_df_final', 'guardian_audit_df']
+    for k in keys_to_nuke:
+        if k in st.session_state:
+            del st.session_state[k]
+            
+    st.sidebar.success("Memory completely wiped! Rebooting...")
+    time.sleep(1)
+    st.rerun()
+
 # --- TABS ---
 tab_port, tab_radar, tab_analyze, tab_journal, tab_backtest = st.tabs([
     "📂 Portfolio", "🎯 Radar Scan", "🔍 Deep Analyzer", "📓 Trade Journal", "📈 Backtester"
