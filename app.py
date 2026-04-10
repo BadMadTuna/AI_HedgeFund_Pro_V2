@@ -37,15 +37,10 @@ if 'detected_regime' not in st.session_state or 'regime_metrics' not in st.sessi
             st.session_state.regime_metrics = {'current_price': 0, 'sma_50': 0, 'sma_200': 0, 'current_volatility': 0, 'baseline_volatility': 0}
             st.session_state.detected_action = "Maximum Defense"
 
-# --- NEW: GLOBAL FX INITIALIZATION ---
+# --- STRICT GLOBAL FX INITIALIZATION ---
 if 'current_fx_rate' not in st.session_state:
-    with st.spinner("Syncing Global FX Rates..."):
-        try:
-            import yfinance as yf
-            eurusd_price = yf.Ticker("EURUSD=X").fast_info['last_price']
-            st.session_state.current_fx_rate = 1.0 / eurusd_price
-        except Exception:
-            st.session_state.current_fx_rate = 0.92 # Safe fallback if API drops
+    with st.spinner("Syncing Live Global FX Rates..."):
+        st.session_state.current_fx_rate = get_real_fx_rate()
 
 # 2. Set the active current_regime to the detected one if it hasn't been manually overridden yet
 if 'current_regime' not in st.session_state:
@@ -70,6 +65,42 @@ def get_sp500_tickers():
     except Exception as e:
         st.error(f"Failed to fetch S&P 500: {e}. Using default tech list.")
         return ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA"]
+    
+@st.cache_data(ttl=300) # Cache the live rate for 5 minutes to prevent spamming APIs
+def get_real_fx_rate() -> float:
+    """Waterfall fetcher: Tries YF -> Frankfurter -> Tiingo to guarantee a live USD to EUR rate."""
+    
+    # 1. Primary: Yahoo Finance
+    try:
+        eurusd_price = yf.Ticker("EURUSD=X").fast_info['last_price']
+        if eurusd_price > 0: 
+            return 1.0 / eurusd_price
+    except Exception:
+        pass
+        
+    # 2. Secondary: Frankfurter API (Free, no-auth, European Central Bank rates)
+    try:
+        res = requests.get("https://api.frankfurter.app/latest?from=USD&to=EUR", timeout=5)
+        if res.status_code == 200:
+            return float(res.json()['rates']['EUR'])
+    except Exception:
+        pass
+
+    # 3. Tertiary: Tiingo (Using your existing API key)
+    try:
+        api_key = os.getenv("TIINGO_API_KEY")
+        if api_key:
+            res = requests.get(f"https://api.tiingo.com/tiingo/fx/top?tickers=eurusd&token={api_key}", timeout=5)
+            if res.status_code == 200:
+                ask_price = float(res.json()[0]['askPrice'])
+                if ask_price > 0: 
+                    return 1.0 / ask_price
+    except Exception:
+        pass
+
+    # 4. Critical Failure
+    st.error("🚨 CRITICAL ERROR: All live FX feeds are offline. Halting execution to protect capital sizing math.")
+    st.stop()
 
 # --- HEADER & SIDEBAR ---
 st.title("🦅 AI Hedge Fund Manager (Pro V2)")
@@ -155,15 +186,9 @@ with tab_port:
     if refresh_clicked and not df_port.empty:
         with st.spinner("Fetching real-time IEX top-of-book prices via Tiingo..."):
             
-            # --- Bulletproof Yahoo Finance FX Fetcher ---
-            try:
-                import yfinance as yf
-                eurusd_price = yf.Ticker("EURUSD=X").fast_info['last_price']
-                usd_to_eur = 1.0 / eurusd_price 
-            except Exception as e:
-                st.warning(f"Could not fetch live FX rate ({e}). Defaulting to global fallback.")
-                usd_to_eur = st.session_state.current_fx_rate
-            # -----------------------------------------------------
+            # --- STRICT FX SYNC ---
+            usd_to_eur = get_real_fx_rate()
+            # ----------------------
 
             # 2. Sort tickers into US (Tiingo IEX) and EU (YFinance Fallback)
             us_tickers = []
