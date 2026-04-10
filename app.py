@@ -715,7 +715,7 @@ with tab_radar:
                         fund_pb.progress((i + 1) / len(top_50_df))
                 
                 if fund_results:
-                    candidates_df = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False).head(40)
+                    candidates_df = pd.DataFrame(fund_results).sort_values(by="Alpha_Score", ascending=False).head(20)
                 else:
                     candidates_df = pd.DataFrame()
                     st.warning("⚠️ Could not fetch fundamental data for any candidates. Yahoo Finance may be rate-limiting your IP.")
