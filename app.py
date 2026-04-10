@@ -22,31 +22,6 @@ def get_clients():
 
 data_client, agent, pm = get_clients()
 
-# --- GLOBAL MACRO STATE INITIALIZATION ---
-# 1. Fetch the Auto-Detected Regime first
-if 'detected_regime' not in st.session_state or 'regime_metrics' not in st.session_state:
-    with st.spinner("Initializing Macro Environment (Layer 1 Brain)..."):
-        regime_data = data_client.get_market_regime("SPY")
-        if regime_data:
-            st.session_state.detected_regime = regime_data['regime']
-            st.session_state.regime_metrics = regime_data['metrics']
-            st.session_state.detected_action = regime_data['recommended_action']
-        else:
-            # Safe Fallbacks
-            st.session_state.detected_regime = 'VOLATILE_BEAR' 
-            st.session_state.regime_metrics = {'current_price': 0, 'sma_50': 0, 'sma_200': 0, 'current_volatility': 0, 'baseline_volatility': 0}
-            st.session_state.detected_action = "Maximum Defense"
-
-# --- STRICT GLOBAL FX INITIALIZATION ---
-if 'current_fx_rate' not in st.session_state:
-    with st.spinner("Syncing Live Global FX Rates..."):
-        st.session_state.current_fx_rate = get_real_fx_rate()
-
-# 2. Set the active current_regime to the detected one if it hasn't been manually overridden yet
-if 'current_regime' not in st.session_state:
-    st.session_state.current_regime = st.session_state.detected_regime
-    st.session_state.regime_action = st.session_state.detected_action
-
 # --- HELPERS ---
 @st.cache_data(ttl=86400) # Cache for 24 hours
 def get_sp500_tickers():
@@ -101,6 +76,31 @@ def get_real_fx_rate() -> float:
     # 4. Critical Failure
     st.error("🚨 CRITICAL ERROR: All live FX feeds are offline. Halting execution to protect capital sizing math.")
     st.stop()
+
+# --- GLOBAL MACRO STATE INITIALIZATION ---
+# 1. Fetch the Auto-Detected Regime first
+if 'detected_regime' not in st.session_state or 'regime_metrics' not in st.session_state:
+    with st.spinner("Initializing Macro Environment (Layer 1 Brain)..."):
+        regime_data = data_client.get_market_regime("SPY")
+        if regime_data:
+            st.session_state.detected_regime = regime_data['regime']
+            st.session_state.regime_metrics = regime_data['metrics']
+            st.session_state.detected_action = regime_data['recommended_action']
+        else:
+            # Safe Fallbacks
+            st.session_state.detected_regime = 'VOLATILE_BEAR' 
+            st.session_state.regime_metrics = {'current_price': 0, 'sma_50': 0, 'sma_200': 0, 'current_volatility': 0, 'baseline_volatility': 0}
+            st.session_state.detected_action = "Maximum Defense"
+
+# --- STRICT GLOBAL FX INITIALIZATION ---
+if 'current_fx_rate' not in st.session_state:
+    with st.spinner("Syncing Live Global FX Rates..."):
+        st.session_state.current_fx_rate = get_real_fx_rate()
+
+# 2. Set the active current_regime to the detected one if it hasn't been manually overridden yet
+if 'current_regime' not in st.session_state:
+    st.session_state.current_regime = st.session_state.detected_regime
+    st.session_state.regime_action = st.session_state.detected_action
 
 # --- HEADER & SIDEBAR ---
 st.title("🦅 AI Hedge Fund Manager (Pro V2)")
