@@ -935,17 +935,24 @@ with tab_radar:
                         math_equity = ACCOUNT_SIZE if is_eu else (ACCOUNT_SIZE / fx_rate)
                         sizing = data_client.get_atr_and_sizing(row['Ticker'], account_value=math_equity, risk_pct=0.01)
                         
-                        if sizing:
-                            price_eur = sizing['Current_Price'] if is_eu else (sizing['Current_Price'] * fx_rate)
-                            invest_eur = sizing['Total_Investment'] if is_eu else (sizing['Total_Investment'] * fx_rate)
-                            stop_eur = sizing['Stop_Loss'] if is_eu else (sizing['Stop_Loss'] * fx_rate)
-                            risk_eur = sizing['Max_Loss_Risk'] if is_eu else (sizing['Max_Loss_Risk'] * fx_rate)
+                        if sizing and 'Price' in row:
+                            # 1. Grab the exact price found during the engine scan
+                            scan_price = row['Price']
+                            
+                            # 2. Convert to EUR exactly ONCE
+                            eur_price = scan_price if is_eu else (scan_price * fx_rate)
+                            
+                            # 3. Calculate all risk metrics directly in EUR
+                            eur_stop_dist = sizing['Stop_Distance'] if is_eu else (sizing['Stop_Distance'] * fx_rate)
+                            eur_stop_loss = eur_price - eur_stop_dist
+                            eur_invest = sizing['Shares'] * eur_price
+                            eur_max_risk = sizing['Shares'] * eur_stop_dist
                             
                             st.success(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Total Equity):**\n"
-                                       f"- Buy **{sizing['Shares']} shares** at approx **€{price_eur:,.2f}**\n"
-                                       f"- Total Capital Deployed: **€{invest_eur:,.2f}**\n"
-                                       f"- Hard Stop Loss: **€{stop_eur:,.2f}** (2x ATR)\n"
-                                       f"- Max Risk if stopped out: **€{risk_eur:,.2f}**")
+                                       f"- Buy **{sizing['Shares']} shares** at approx **€{eur_price:,.2f}**\n"
+                                       f"- Total Capital Deployed: **€{eur_invest:,.2f}**\n"
+                                       f"- Hard Stop Loss: **€{eur_stop_loss:,.2f}** (Calculated at 2x ATR)\n"
+                                       f"- Max Risk if stopped out: **€{eur_max_risk:,.2f}**")
                     st.markdown(row['Reasoning'])
         
         st.divider()
@@ -1109,20 +1116,29 @@ with tab_analyze:
                 fx_rate = st.session_state.get('current_fx_rate', 0.92)
                 
                 is_eu = "." in a_ticker
+                
+                # Sizing engine needs the account value in USD to calculate share count correctly
                 math_equity = ACCOUNT_SIZE if is_eu else (ACCOUNT_SIZE / fx_rate)
                 sizing = data_client.get_atr_and_sizing(a_ticker, account_value=math_equity, risk_pct=0.01)
                 
-                if sizing:
-                    price_eur = sizing['Current_Price'] if is_eu else (sizing['Current_Price'] * fx_rate)
-                    invest_eur = sizing['Total_Investment'] if is_eu else (sizing['Total_Investment'] * fx_rate)
-                    stop_eur = sizing['Stop_Loss'] if is_eu else (sizing['Stop_Loss'] * fx_rate)
-                    risk_eur = sizing['Max_Loss_Risk'] if is_eu else (sizing['Max_Loss_Risk'] * fx_rate)
+                if sizing and 'Price' in tech:
+                    # 1. Grab the exact UI price (e.g., $121.67)
+                    ui_price = tech['Price']
+                    
+                    # 2. Convert to EUR exactly ONCE 
+                    eur_price = ui_price if is_eu else (ui_price * fx_rate)
+                    
+                    # 3. Calculate all risk metrics directly in EUR
+                    eur_stop_dist = sizing['Stop_Distance'] if is_eu else (sizing['Stop_Distance'] * fx_rate)
+                    eur_stop_loss = eur_price - eur_stop_dist
+                    eur_invest = sizing['Shares'] * eur_price
+                    eur_max_risk = sizing['Shares'] * eur_stop_dist
                     
                     st.info(f"**Execution Plan (1% Risk on €{ACCOUNT_SIZE:,.2f} Total Equity):**\n"
-                               f"- Buy **{sizing['Shares']} shares** at approx **€{price_eur:,.2f}**\n"
-                               f"- Total Capital Deployed: **€{invest_eur:,.2f}**\n"
-                               f"- Hard Stop Loss: **€{stop_eur:,.2f}** (Calculated at 2x ATR)\n"
-                               f"- Max Risk if stopped out: **€{risk_eur:,.2f}**")
+                               f"- Buy **{sizing['Shares']} shares** at approx **€{eur_price:,.2f}**\n"
+                               f"- Total Capital Deployed: **€{eur_invest:,.2f}**\n"
+                               f"- Hard Stop Loss: **€{eur_stop_loss:,.2f}** (Calculated at 2x ATR)\n"
+                               f"- Max Risk if stopped out: **€{eur_max_risk:,.2f}**")
 
 with tab_journal:
     st.header("📓 Trade Journal")
